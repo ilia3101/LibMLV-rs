@@ -1,0 +1,25 @@
+[package]
+name = "libmlv"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rawloader = { version = "*", optional = true }
+
+[lib]
+name = "mlv"
+
+[features]
+default = ["std"] # Use of standard library enabled by default
+std = []
+raw2mlv-deps = ["rawloader"]
+
+[[bin]]         
+name = "raw2mlv"
+required-features = ["raw2mlv-deps"]
+
+[[bin]]         
+name = "index_demo"
+required-features = []

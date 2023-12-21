@@ -227,7 +227,7 @@ impl<T> MainReader<T> {
             all_blocks: Vec::new(),
             all_vidf: vec![],
             all_audf: vec![],
-            by_type: HashMap::new(),
+            // by_type: HashMap::new(),
         }
     }
 
@@ -245,7 +245,8 @@ impl<T> MainReader<T> {
             } else if block_info.block_type == "AUDF" {
                 self.all_audf.push(*location);
             } else {
-                self.by_type.entry(block_info.block_type).or_insert_with(|| vec![]).push((*location,block_info.time_stamp,data.clone()));
+                /* Hashmap by block type? */
+                // self.by_type.entry(block_info.block_type).or_insert_with(|| vec![]).push((*location,block_info.time_stamp,data.clone()));
             }
         }
     }

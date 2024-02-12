@@ -1,9 +1,11 @@
 #![allow(non_snake_case)]
 // #![allow(non_camel_case_types)]
 
-// pub trait FromBytes: Sized {
-//     fn from_bytes(bytes: &[u8]) -> Option<Self>;
-// }
+pub trait FromBytes: Sized {
+    fn from_bytes(bytes: &[u8]) -> Option<Self>;
+}
+
+// impl FromBytes for Re
 
 macro_rules! define_mlv_block {
     ($name: ident { $($field_name:ident : $field_type:ty),+ }) => {
@@ -203,3 +205,14 @@ pub struct Wavi {
 //     uint32_t    digitalGain;    /* digital ISO gain (1024 = 1 EV) - it's not baked in the raw data, so you may want to scale it or adjust the white level */
 //     uint64_t    shutterValue;    /* exposure time in microseconds */
 // }  mlv_expo_hdr_t;
+
+
+
+// pub trait Block: Sized {
+//     fn size() -> u32;
+//     fn instance_size() -> u32;
+//     fn signature(&self) -> BlockTag;
+//     fn timestamp(&self) -> u64;
+//     // fn serialise(&self)
+//     fn from_bytes(&self, bytes: impl Iterator<Item=u8>) -> Option<Self>;
+// }

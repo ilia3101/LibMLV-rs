@@ -14,7 +14,7 @@ fn read_into_struct<T: Copy>(mut file: impl Read) -> Option<T> {
 /* TODO: better end-of-file, IO error and other error handling */
 #[derive(Debug)]
 pub struct BlockReader<Reader> {
-    file: Reader,
+    pub file: Reader,
     block: Option<BlockHeader>,
     position: u64,
 }

@@ -1,6 +1,7 @@
 pub mod blocks;
 pub mod index;
 pub mod endianness;
+pub mod decode;
 
 /************************** Core traits and types ***************************/
 
@@ -151,12 +152,12 @@ use std::{io::BufReader, fs::File, path::Path, fmt::Debug, collections::HashMap}
 
 const MAX_BLOCK_STORED_SIZE: usize = 512;
 
-// #[derive(Debug)]
-// pub struct VidfFrameInfo {
-//     pub block_location: FileLocation,
-//     pub data_offset: u32,
-//     pub data_bytes: u32, /* Useful when compressed */
-// }
+#[derive(Clone,Copy,Debug)]
+pub struct VidfFrameInfo {
+    pub block_location: FileLocation,
+    pub data_offset: u32,
+    pub data_bytes: u32, /* Useful when compressed */
+}
 
 // #[derive(Debug)]
 // pub struct AudfFrameInfo {
@@ -176,9 +177,11 @@ pub struct MainReader<Reader> {
     // by_type: HashMap<BlockTag, Vec<(FileLocation,TimeStamp,Option<Vec<u8>>)>>,
 }
 
-impl MainReader<BufReader<File>> {
+impl MainReader<BufReader<File>>
+{
     #[inline]
-    pub fn open_mlv<P: AsRef<Path>>(path: P) -> Option<Self> {
+    pub fn open_mlv<P: AsRef<Path>>(path: P) -> Option<Self>
+    {
         /* TODO: search for chunks (and limit to 101) */
         let mut chunk_files = vec![BlockReader::new(BufReader::new(File::open(path).ok()?), 0)?];
 
@@ -194,8 +197,9 @@ impl MainReader<BufReader<File>> {
                             block_info,
                             FileLocation::new(chunk_index as u8, file.get_block_position())?,
                             None /* TODO: read block into u8 vec and pass it here.
-                             (And then find a better way of doing it with less allocations) */
+                            (And then find a better way of doing it with less allocations) */
                         );
+                        // if block_info.block_type == 
                     }
                 }
                 else { break; }
@@ -216,6 +220,44 @@ impl MainReader<BufReader<File>> {
         reader.finalise();
 
         Some(reader)
+    }
+}
+
+impl<Reader> MainReader<Reader> {
+    pub fn get_num_frames(&self) -> u32 {
+        self.all_vidf.len() as u32
+    }
+
+    pub fn decode_frame(&mut self, idx: u32) -> Option<Vec<u16>>
+    where
+        Reader: std::io::Read + std::io::Seek
+    {
+        let file_location = self.all_vidf.get(idx as usize)?;
+        let file = &mut self.chunk_files[file_location.get_chunk() as usize].file;
+        file.seek(std::io::SeekFrom::Start(file_location.get_offset() + 4)).ok()?;
+
+        let mut size = [0u8; 4];
+        file.read_exact(&mut size).ok()?;
+        file.seek(std::io::SeekFrom::Current(8)).ok()?; /* Skip Timestamp */
+        file.seek(std::io::SeekFrom::Current(12)).ok()?; /* Skip the unnecessary fields in VIDF, to get to offset */
+
+        let mut data_offset = [0u8; 4];
+        file.read_exact(&mut data_offset).ok()?;
+
+        let size = u32::from_le_bytes(size);
+        let data_offset = u32::from_le_bytes(data_offset);
+
+        file.seek(std::io::SeekFrom::Current(data_offset as i64)).ok()?; /* Skip to frame data */
+
+        let frame_data_size = (size - (data_offset + 32)) as usize;
+        let mut data = Vec::with_capacity(frame_data_size);
+        unsafe { data.set_len(frame_data_size) }
+
+        file.read_exact(&mut data).ok()?;
+
+        /* TODO: decode 14-bit and compression here */
+        let frame_max_length = 1000000000000000; /* TODO: multiply width*height here */
+        Some(decode::decode_packed12(&data).take(frame_max_length).collect())
     }
 }
 

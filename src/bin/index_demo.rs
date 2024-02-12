@@ -42,4 +42,21 @@ pub fn main()
     reader.print_blocks();
 
     println!("File indexed and loaded in {:.1?} ms", (end.duration_since(start).unwrap().as_micros()) as f64 / 1000.0);
+
+
+    let data = reader.decode_frame(0).unwrap().into_iter().flat_map(|a| {
+        std::iter::repeat((a as f32 * 0.025) as u8).take(3)
+    }).collect::<Vec<_>>();
+
+    save_bmp(640, 320, &data, &mut std::fs::File::create("test.bmp").unwrap());
+}
+
+fn save_bmp(width: u32, height: u32, data: &[u8], file: &mut impl std::io::Write) {
+    let header: [u8; 26] = [0x42,0x4D,0,0,0,0,0,0,0,0,26,0,0,0,12,0,0,0,width.to_le_bytes()[0],
+        width.to_le_bytes()[1],height.to_le_bytes()[0],height.to_le_bytes()[1],1,0,24,0];
+    let dat: Vec<_> = data.chunks_exact(3*width as usize).rev()
+        .flat_map(|a| a.chunks_exact(3).flat_map(|a: &[u8]| [a[2],a[1],a[0]].into_iter()))
+        .collect();
+    file.write_all(&header).unwrap();
+    file.write_all(&dat).unwrap();
 }

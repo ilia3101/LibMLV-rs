@@ -22,6 +22,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
+use core::ops::{Index, IndexMut};
+
 #[derive(Debug,Copy,Clone,PartialEq,Eq)]
 pub enum Lj92Error {
     Corrupt = -1,
@@ -32,8 +34,8 @@ pub enum Lj92Error {
     EndOfImage = -6, /* ilia3101 */
 }
 
-#[derive(Debug,Default)]
-pub struct Lj92<'a> {
+#[derive(Debug)]
+pub struct Lj92<'a, HuffLut> {
     data: &'a [u8],
 
     scanstart: usize,
@@ -45,7 +47,7 @@ pub struct Lj92<'a> {
     // sssshist: [u32; 16],
 
     // Huffman table - only one supported, and probably needed
-    hufflut: Vec<u16>,
+    hufflut: HuffLut,
     huffbits: u32,
 
     // Parse state
@@ -53,7 +55,38 @@ pub struct Lj92<'a> {
     bits: i32, /* Current bits */
 }
 
-impl<'a> Lj92<'a> {
+#[cfg(feature = "std")]
+impl<'a> Lj92<'a, Vec<u16>> {
+    #[inline]
+    pub fn open_vec(data: &'a [u8]) -> Result<Self, Lj92Error> {
+        let mut lj = Self::with_custom_lut(vec![0u16; 65536]);
+        lj.data = data;
+        let ret = lj.find_soi();
+        ret.map(|_| lj)
+    }
+}
+
+impl<'a> Lj92<'a, [u16; 16384]> {
+    #[inline]
+    pub fn open(data: &'a [u8]) -> Result<Self, Lj92Error> {
+        let mut lj = Self::with_custom_lut([0u16; 16384]);
+        lj.data = data;
+        let ret = lj.find_soi();
+        ret.map(|_| lj)
+    }
+}
+
+impl<'a, HuffLut> Lj92<'a, HuffLut>
+where
+    HuffLut: Index<usize, Output=u16> + IndexMut<usize, Output=u16>
+{
+    pub fn with_custom_lut(hufflut: HuffLut) -> Self {
+        Self {
+            data: Default::default(), scanstart: 0, ix: 0, x: 0, y: 0, bitdepth: 0,
+            components: 0, hufflut, huffbits: 0, cnt: 0, bits: 0,
+        }
+    }
+
     /* Getters */
     pub fn width(&self) -> u32 { self.x }
     pub fn height(&self) -> u32 { self.y }
@@ -67,22 +100,15 @@ impl<'a> Lj92<'a> {
         u16::from_be_bytes([self.data[self.ix+off], self.data[self.ix+off+1]])
     }
 
-    /* Returns (Self, width, height, bitdepth, components) */
-    pub fn open(data: &'a [u8]) -> Result<Lj92, Lj92Error> {
-        let mut lj = Self::default();
-        lj.data = data;
-        let ret = lj.find_soi();
-        ret.map(|_| lj)
-    }
-
     /* I have merged lj92_decode and parse_scan into one function,
      * skipping the saving of parameters into the struct */
+    #[inline]
     pub fn decode(
         &mut self,
         out: &'a mut [u16],
         skip_length: usize,
         linearize: Option<&[u16]>
-    ) -> Result<(),Lj92Error> {
+    ) -> Result<(), Lj92Error> {
         // self.sssshist = [0; 16];
         self.ix = self.scanstart;
         let compcount = self.data[self.ix+2];
@@ -129,7 +155,7 @@ impl<'a> Lj92<'a> {
                             }
                         }
                     };
-                    
+
                     diff = self.next_diff();
                     left = to_u16((px as i32) + diff) as i32;
 
@@ -150,12 +176,14 @@ impl<'a> Lj92<'a> {
         Ok(())
     }
 
+    #[inline]
     fn find_soi(&mut self) -> Result<(),Lj92Error> {
         if self.find() == Ok(0xd8) {
             self.parse_image()
         } else { Err(Lj92Error::Corrupt) }
     }
 
+    #[inline]
     fn find(&mut self) -> Result<u8,Lj92Error> {
         while self.data[self.ix] != 0xFF && self.ix < (self.data.len()-1) { self.ix += 1; }
         self.ix += 2;
@@ -163,6 +191,7 @@ impl<'a> Lj92<'a> {
         Ok(self.data[self.ix-1])
     }
 
+    #[inline]
     fn parse_image(&mut self) -> Result<(),Lj92Error> {
         let mut ret = Ok(());
         while let Ok(next_marker) = self.find() {
@@ -184,12 +213,14 @@ impl<'a> Lj92<'a> {
         return ret;
     }
 
+    #[inline]
     fn parse_block(&mut self) -> Result<(),Lj92Error> {
         self.ix += self.get_be_u16(0) as usize;
         if self.ix >= self.data.len() { return Err(Lj92Error::Corrupt); }
         return Ok(());
     }
 
+    #[inline]
     fn parse_sof3(&mut self) -> Result<(),Lj92Error> {
         if (self.ix + 6) >= self.data.len() { return Err(Lj92Error::Corrupt); }
         self.y = self.get_be_u16(3) as u32;
@@ -200,6 +231,7 @@ impl<'a> Lj92<'a> {
         Ok(())
     }
 
+    #[inline]
     fn parse_huff(&mut self) -> Result<(),Lj92Error> {
         let mut ret = Err(Lj92Error::Corrupt);
         let huffhead = &self.data[self.ix..]; // xstruct.unpack('>HB16B',self.data[self.ix:self.ix+19])
@@ -219,7 +251,7 @@ impl<'a> Lj92<'a> {
         }
         self.huffbits = maxbits as u32;
         /* Now fill the lut */
-        self.hufflut = vec![0u16; 1 << maxbits];
+        // self.hufflut = vec![0u16; 1 << maxbits];
         let mut i = 0;
         let mut hv = 0;
         let mut rv = 0;
@@ -251,6 +283,7 @@ impl<'a> Lj92<'a> {
         return ret;
     }
 
+    #[inline]
     fn next_diff(&mut self) -> i32 {
         let mut bits = self.bits;
         let mut cnt = self.cnt;

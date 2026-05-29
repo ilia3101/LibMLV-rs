@@ -1,58 +1,79 @@
-use crate::{Read, Seek, SeekFrom};
 use crate::BlockHeader;
+use crate::blocks::{block_get_type, block_get_timestamp, block_get_size};
 
-/* TODO: completely refactor this whole idea */
-
-/* TODO: better end-of-file, IO error and other error handling */
-#[derive(Debug)]
-pub struct BlockReader<Reader, const MAX_BYTES: usize = 256> {
-    pub file: Reader,
-    block: Option<BlockHeader>,
-    block_data: [u8; MAX_BYTES],
-    position: u64,
+#[derive(Debug,Copy,Clone)]
+pub enum ReadBlocksError<ReadErrorType> {
+    BlockCutoff,
+    TrailingBytes,
+    ImpossiblySmallBlockSize,
+    FileTooSmall,
+    ReadError(ReadErrorType),
 }
 
-impl<Reader: Read + Seek, const MAX_BYTES: usize> BlockReader<Reader, MAX_BYTES>
+/* TODO: make this an std-gated feature */
+use std::io::{self, Read, Seek, SeekFrom};
+pub fn read_wrapper<File>(mut file: File) -> impl FnMut(u64, &mut [u8]) -> io::Result<()>
+where
+    File: Read + Seek
 {
-    /* TODO: use these arguments: (chunks: impl AsRef<[impl Read]>) */
-    pub fn new(file: Reader) -> Option<Self> {
-        let mut block_reader = Self { file, block_data: [0;MAX_BYTES], block: None, position: 0 };
-        block_reader.file.seek(SeekFrom::Start(0)).ok()?;
-        block_reader.next_block()?;
-        Some(block_reader)
+    let mut pos = 0u64;
+    file.rewind();
+
+    return move |read_pos: u64, out: &mut [u8]| {
+        if read_pos != pos {
+            file.seek_relative(read_pos as i64 - pos as i64)?;
+        }
+        pos = read_pos + out.len() as u64;
+        file.read_exact(out).map(|_| ())
+    }
+}
+
+pub fn read_blocks<const MAX_BLOCK_BYTES: usize, ReadError>(
+    file_length: u64,
+    /* Pos, out buffer. If this returns error, the function returns an error and exits */
+    mut read_exact: impl FnMut(u64, &mut [u8]) -> Result<(), ReadError>,
+    /* Return true to continue, false to exit early, args: data, block offset */
+    mut block_data_callback: impl FnMut(&[u8], u64) -> bool,
+) -> Result<(), ReadBlocksError<ReadError>> {
+    let mut buf = [0u8; MAX_BLOCK_BYTES];
+    let mut pos = 0u64;
+
+    if file_length < 16 {
+        return Err(ReadBlocksError::FileTooSmall)
     }
 
-    #[inline]
-    pub fn next_block(&mut self) -> Option<BlockHeader> {
-        self.position += self.block.map(|b| b.block_size).unwrap_or(0) as u64;
-        let mut bytes = [0; 16];
-        self.block = self.file.read_exact(&mut bytes).map(|_| BlockHeader::from_bytes(bytes)).ok();
-        if let Some(header) = self.block {
-            if header.block_size >= 16 {
-                if header.block_size as usize <= MAX_BYTES {
-                    header.to_bytes(&mut self.block_data[0..16]);
-                    self.file.read_exact(&mut self.block_data[16..(header.block_size as usize)]).ok()?;
-                } else {
-                    header.to_bytes(&mut self.block_data[0..16]);
-                    self.file.read_exact(&mut self.block_data[16..]).ok()?;
-                    self.file.seek(SeekFrom::Current((header.block_size - (MAX_BYTES as u32)) as i64)).ok()?;
-                }
-            } else {
-                /* Impossibly small block size. TODO: use an error type here? */
-                return None;
+    loop {
+        /* Due to checks, this should always succeed */
+        if let Err(e) = read_exact(pos, &mut buf[0..16]) {
+            return Err(ReadBlocksError::ReadError(e))
+        }
+        let block_size = u32::from_le_bytes([buf[4],buf[5],buf[6],buf[7]]);
+
+        if block_size < 16 {
+            return Err(ReadBlocksError::ImpossiblySmallBlockSize)
+        }
+
+        let next_block_pos = pos + block_size as u64;
+
+        if next_block_pos > file_length {
+            println!("File length = {file_length}, nextpos = {next_block_pos}");
+            // TODO: Add mechanism for leniency to cut-off blocks? Eg slightly cut off final frame
+            return Err(ReadBlocksError::BlockCutoff)
+        } else {
+            let read_end = (block_size as usize).min(MAX_BLOCK_BYTES);
+            if let Err(e) = read_exact(pos+16, &mut buf[16..read_end]) {
+                return Err(ReadBlocksError::ReadError(e))
             }
-        } return self.block;
+            block_data_callback(&buf[0..read_end], pos);
+            if next_block_pos == file_length {
+                /* End of file! */
+                return Ok(())
+            } else if file_length - next_block_pos < 16 {
+                /* Data after next block is less than 16 bytes which is the minimum size for a block */
+                return Err(ReadBlocksError::TrailingBytes)
+            } else { /* Fine */ }
+
+            pos = next_block_pos;
+        }
     }
-
-    /* Returns up to MAX_BYTES bytes of the current block (excluding 16-byte header) */
-    #[inline]
-    pub fn block_bytes(&mut self) -> Option<&[u8]> {
-        Some(&self.block_data[0..(self.block.as_ref()?.block_size as usize).min(MAX_BYTES)])
-    }
-
-    #[inline]
-    pub fn block_position(&self) -> u64 { self.position }
-
-    #[inline]
-    pub fn block_info(&self) -> Option<BlockHeader> { self.block }
 }

@@ -4,6 +4,8 @@
 
 /********************** Type defiintions and mactos **********************/
 
+/* Why did i invent my own reflection */
+
 const SIGNED_BIT: u8 = 0x80;
 
 #[derive(Debug,Clone,Copy)]
@@ -149,6 +151,23 @@ impl_get_field!(get_i16, i16, 2);
 impl_get_field!(get_i32, i32, 4);
 impl_get_field!(get_i64, i64, 8);
 
+/* Block functions for working directly with blocks as bytes */
+pub fn block_get_type<'a>(data: &'a [u8]) -> Option<&'a str> {
+    str::from_utf8(&data[0..4]).ok()
+}
+
+pub fn block_get_timestamp(data: &[u8]) -> Option<u64> {
+    if block_get_type(data) == Some("MLVI") {
+        Some(0)
+    } else {
+        Some(u64::from_le_bytes(*data[8..16].first_chunk()?))
+    }
+}
+
+pub fn block_get_size(data: &[u8]) -> Option<u32> {
+    Some(u32::from_le_bytes(*data[4..8].first_chunk()?))
+}
+
 /*********************************************************************************
                                  BLOCK TYPE DEFINITIONS
 *********************************************************************************/
@@ -238,15 +257,15 @@ mlv_all_block_def! {
         blockType: [u8; 4],         /* RAWC - raw image capture information */
         blockSize: u32,           /* sizeof(mlv_rawc_hdr_t) */
         timestamp: u64,           /* hardware counter timestamp */
-    
+
         /* see struct raw_capture_info from raw.h */
-    
+
         /* sensor attributes: resolution, crop factor */
         sensor_res_x: u16,        /* sensor resolution */
         sensor_res_y: u16,        /* 2-3 GPixel cameras anytime soon? (to overflow this) */
         sensor_crop: u16,         /* sensor crop factor x100 */
         reserved: u16,            /* reserved for future use */
-    
+
         /* video mode attributes */
         /* (how the sensor is configured for image capture) */
         /* subsampling factor: (binning_x+skipping_x) x (binning_y+skipping_y) */
@@ -256,7 +275,7 @@ mlv_all_block_def! {
         skipping_y: u8,             /* 2 (most cameras in 1080p); 4 (most cameras in 720p); 0 (5D3) */
         offset_x: i16,            /* crop offset (top-left active pixel) - optional (SHRT_MIN if unknown) */
         offset_y: i16,            /* relative to top-left active pixel from a full-res image (FRSP or CR2) */
-    
+
         /* The captured *active* area (raw_info.active_area) will be mapped
          * on a full-res image (which does not use subsampling) as follows:
          *   active_width  = raw_info.active_area.x2 - raw_info.active_area.x1

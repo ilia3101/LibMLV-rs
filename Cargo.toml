@@ -1,12 +1,13 @@
 [package]
 name = "libmlv"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 rawloader = { version = "*", optional = true }
+hound = { version = "3", optional = true }
 
 [lib]
 name = "mlv"
@@ -15,15 +16,20 @@ name = "mlv"
 default = ["std"] # Use of standard library enabled by default
 std = []
 raw2mlv-deps = ["rawloader"]
+audio-export = ["hound"]
 
-[[bin]]         
+[[bin]]
 name = "raw2mlv"
 required-features = ["raw2mlv-deps"]
 
-[[bin]]         
+[[bin]]
 name = "index_demo"
 required-features = []
 
 [[bin]]
 name = "speed_test"
 required-features = ["raw2mlv-deps"]
+
+[[bin]]
+name = "extract_audio"
+required-features = ["audio-export"]

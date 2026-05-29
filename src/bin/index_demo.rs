@@ -43,8 +43,6 @@ pub fn main()
         println!("Block {}: {:#?} bytes", name, block.size());
     }
 
-    // (3.84*1.536)*(1000/43)
-
     let wl = reader.white_level().unwrap() as f32;
     let bl = reader.black_level().unwrap() as f32;
     let width = reader.width().unwrap() as u32;
@@ -53,8 +51,9 @@ pub fn main()
 
     let mut decoded_buf = vec![0u16; (width * height) as usize];
 
-    let num_decodes = 500;
+    let num_decodes = 1;
     let start = std::time::Instant::now();
+
     let mut decoded = reader.decode_frame(0, &mut decoded_buf).unwrap();
     for i in 1..num_decodes {
         decoded = reader.decode_frame(i % 10, &mut decoded_buf).unwrap();

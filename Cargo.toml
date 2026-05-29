@@ -23,3 +23,7 @@ required-features = ["raw2mlv-deps"]
 [[bin]]         
 name = "index_demo"
 required-features = []
+
+[[bin]]
+name = "speed_test"
+required-features = ["raw2mlv-deps"]

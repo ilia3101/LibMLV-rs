@@ -22,7 +22,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-#[derive(Debug,Copy,Clone,PartialEq)]
+#[derive(Debug,Copy,Clone,PartialEq,Eq)]
 pub enum Lj92Error {
     Corrupt = -1,
     NoMemory = -2,
@@ -54,6 +54,12 @@ pub struct Lj92<'a> {
 }
 
 impl<'a> Lj92<'a> {
+    /* Getters */
+    pub fn width(&self) -> u32 { self.x }
+    pub fn height(&self) -> u32 { self.y }
+    pub fn bitdepth(&self) -> u8 { self.bitdepth }
+    pub fn components(&self) -> u8 { self.components }
+
     /* This does what the 'BEH' macro did in the original -
      * getting a Big Endian Half from the input data, with given offset */
     #[inline(always)]
@@ -62,16 +68,15 @@ impl<'a> Lj92<'a> {
     }
 
     /* Returns (Self, width, height, bitdepth, components) */
-    pub fn open(data: &'a [u8]) -> Result<(Lj92, i32, i32, i32, i32), Lj92Error> {
+    pub fn open(data: &'a [u8]) -> Result<Lj92, Lj92Error> {
         let mut lj = Self::default();
         lj.data = data;
         let ret = lj.find_soi();
-        let (width, height, bitdepth, components) = (lj.x as i32, lj.y as i32, lj.bitdepth as i32, lj.components as i32);
-        ret.map(|_| (lj, width, height, bitdepth, components))
+        ret.map(|_| lj)
     }
 
     /* I have merged lj92_decode and parse_scan into one function,
-     * skipping saving the parameters into the struct */
+     * skipping the saving of parameters into the struct */
     pub fn decode(
         &mut self,
         out: &'a mut [u16],
@@ -83,19 +88,20 @@ impl<'a> Lj92<'a> {
         let compcount = self.data[self.ix+2];
         let pred = self.data[self.ix+3+2*compcount as usize];
         if pred > 7 { return Err(Lj92Error::Corrupt); }
-        // if (pred==6) { return parsePred6(self); } /* Fast path, TODO: translate it to rust as well */
+        // if (pred==6) { return parsePred6(self); } /* Fast path, TODO: translate it to rust as well? */
         self.ix += self.get_be_u16(0) as usize;
         self.cnt = 0;
         self.bits = 0;
 
         /* To convert to u16 while overflowing */
-        let to_u16 = |x: i32| (x % 65536) as u16;
+        let to_u16 = |x: i32| (x & 0xffff) as u16;
 
         // First pixel predicted from base value
         let mut diff;
         let mut px;
         let mut left = 0i32;
         let row_out_len = (self.x * self.components as u32) as usize + skip_length;
+
         for row in 0..(self.y as usize) {
             let row_start = row * row_out_len;
             let prev_row_start = row.saturating_sub(1) * row_out_len;
@@ -106,10 +112,10 @@ impl<'a> Lj92<'a> {
                 for c in 0..(self.components as usize) {
                     px = match (row, col) {
                         (0, 0) => 1 << (self.bitdepth - 1),
-                        (0, _) => thisrow(out, ((col - 1) * self.components as usize + c) as usize),
-                        (_, 0) => lastrow(out, c as usize),
+                        (0, _) => thisrow(out, colx - self.components as usize + c),
+                        (_, 0) => lastrow(out, c),
                         (_, _) => {
-                            let prev_colx = (col - 1) * self.components as usize;
+                            let prev_colx = colx - self.components as usize;
                             match pred {
                                 0 => 0,
                                 1 => thisrow(out, prev_colx + c),
@@ -125,18 +131,18 @@ impl<'a> Lj92<'a> {
                     };
                     
                     diff = self.next_diff();
-                    left = (px as i32) + diff;
-                    left = ((left % 65536) as u16) as i32;
+                    left = to_u16((px as i32) + diff) as i32;
 
                     let linear = if let Some(linearize) = linearize {
                             /* ilia3101: Is this bounds checking really necessary? */
                             if left > linearize.len() as i32 { return Err(Lj92Error::Corrupt); }
                             linearize[left as usize]
-                        } else {
-                            left as u16
-                        };
+                        } else { left as u16 };
 
-                    out[row_start + colx + c] = linear; // HACK
+                    /* Weird- adding this checked version made it a tiny bit faster than normal indexing??? */
+                    if let Some(out) = out.get_mut(row_start + colx + c) {
+                        *out = linear;
+                    } else { return Ok(()); } /* Todo: return ok... or error? */
                 } // c
             } // col
         } // row

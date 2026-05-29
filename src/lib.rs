@@ -1,19 +1,41 @@
 pub mod blocks;
-pub mod index;
-pub mod endianness;
 pub mod decode;
+pub mod utils;
+pub mod lj92;
+
+pub enum MLVError {
+    CorruptFile,
+}
 
 /************************** Core traits and types ***************************/
 
-// pub trait Index {
-//     fn get_num_blocks_of_type(&self, block_type: BlockTag) -> usize;
-//     fn get_pos_of_block(&self, block_type: BlockTag, block_number: usize) -> Option<FileLocation>;
-//     // fn iter_blocks_of_type(&self, block_type: BlockTag) -> impl Iterator<Item=(BlockHeader,FileLocation)>;
-// }
+pub use utils::{Read, Seek, SeekFrom};
 
-type TimeStamp = endianness::u64le;
+#[derive(Debug,Clone,Copy,PartialEq,Eq,PartialOrd)]
+pub struct BlockHeader {
+    pub block_type: BlockTag,
+    pub block_size: u32,
+    pub time_stamp: u64,
+}
 
-#[derive(Clone,Copy,PartialEq,Eq,Hash)]
+impl BlockHeader {
+    #[inline]
+    pub const fn from_bytes([a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p]: [u8; 16]) -> Self {
+        Self {
+            block_type: BlockTag([a,b,c,d]),
+            block_size: u32::from_le_bytes([e,f,g,h]),
+            time_stamp: u64::from_le_bytes([i,j,k,l,m,n,o,p]),
+        }
+    }
+    #[inline]
+    pub fn to_bytes(&self, out: &mut [u8]) {
+        out[0..4].copy_from_slice(&self.block_type.0);
+        out[4..8].copy_from_slice(&self.block_size.to_le_bytes());
+        out[8..16].copy_from_slice(&self.time_stamp.to_le_bytes());
+    }
+}
+
+#[derive(Clone,Copy,PartialEq,Eq,PartialOrd)]
 #[repr(transparent)]
 pub struct BlockTag (pub [u8;4]);
 
@@ -28,14 +50,14 @@ impl BlockTag {
 }
 
 impl PartialEq<&str> for BlockTag {
-    #[inline(always)]
+    #[inline]
     fn eq(&self, s: &&str) -> bool {
         s.len() == 4 && s.chars().count() == 4 && self.0.iter().zip(s.chars()).all(|(a,b)| *a == b as u8)
     }
 }
 
 impl PartialEq<str> for BlockTag {
-    #[inline(always)] fn eq(&self, s: &str) -> bool { self == s }
+    #[inline] fn eq(&self, s: &str) -> bool { self == s }
 }
 
 impl Debug for BlockTag {
@@ -47,21 +69,13 @@ impl Debug for BlockTag {
     }
 }
 
-/* A data source trait to represent a set of files, custom implementations possible
- * for no_std uses, but the default implementation uses std */
-pub trait DataSource {
-    fn get_num_chunks(&self) -> u8;
-    fn get_chunk_size(&self, chunk: u8) -> Option<u64>;
-    fn read(&mut self, chunk: u8, position: u64, output: &mut [u8]) -> u64;
-}
-
 /* Core blocks providing information about an MLV clip */
 #[derive(Default,Debug,Copy,Clone)]
 pub struct CoreBlocks {
-    pub file: Option<blocks::FileHeader>,
-    pub rawi: Option<blocks::Rawi>,
-    pub rawc: Option<blocks::Rawc>,
-    pub wavi: Option<blocks::Wavi>,
+    pub mlvi: Option<[u8; 52]>,
+    pub rawi: Option<[u8; 180]>,
+    // pub rawc: Option<blocks::Rawc>,
+    pub wavi: Option<[u8; 32]>,
     /* TODO. */
     // pub idnt: Option<(u64, IDNT)>,
     // pub diso: Option<(u64, DISO)>,
@@ -73,15 +87,7 @@ pub struct CoreBlocks {
     // pub styl: Option<(u64, STYL)>,
 }
 
-#[derive(Clone,Copy,PartialEq,Debug)]
-#[repr(C)]
-pub struct BlockHeader {
-    pub block_type: BlockTag,
-    pub block_size: endianness::u32le,
-    pub time_stamp: TimeStamp,
-}
-
-#[derive(Clone,Copy)]
+#[derive(Clone,Copy,PartialEq,Eq)]
 #[repr(transparent)]
 pub struct FileLocation ([u8;6]);
 
@@ -89,45 +95,24 @@ impl FileLocation {
     #[inline]
     pub fn new(chunk: u8, offset: u64) -> Option<Self> {
         let [x,y,z,a,b,c,d,e] = offset.to_be_bytes();
-        if x != 0 || y != 0 || z != 0 {
-            return None; /* Offset is too large */
-        } else {
-            Some(Self([chunk,a,b,c,d,e]))
-        }
+        (x == 0 && y == 0 && z == 0).then_some(Self([chunk,a,b,c,d,e]))
     }
     #[inline]
-    pub fn get_offset(self) -> u64 {
+    pub fn offset(self) -> u64 {
         let Self([_,a,b,c,d,e]) = self;
         u64::from_be_bytes([0,0,0,a,b,c,d,e])
     }
     #[inline]
-    pub fn get_chunk(self) -> u8 { self.0[0] }
+    pub fn chunk(self) -> u8 { self.0[0] }
     #[inline]
     pub fn apply_offset(self, offset: i64) -> Option<Self> {
-        Self::new(self.get_chunk(), u64::try_from((self.get_offset() as i64).checked_add(offset)?).ok()?)
+        Self::new(self.chunk(), u64::try_from((self.offset() as i64).checked_add(offset)?).ok()?)
     }
 }
 
-// use core::num::NonZeroU64;
-
-// #[derive(Clone,Copy)]
-// #[repr(transparent)]
-// pub struct FileLocation (NonZeroU64);
-
-// impl FileLocation {
-//     #[inline(always)]
-//     pub fn new(chunk: u8, offset: u64) -> Option<Self> {
-//         Some(Self(NonZeroU64::new(chunk.checked_add(1)? as u64 | offset.checked_shl(8)?)?))
-//     }
-//     #[inline(always)]
-//     pub fn get_chunk(&self) -> u8 { (self.0.get() & 255) as u8 - 1 }
-//     #[inline(always)]
-//     pub fn get_offset(&self) -> u64 { self.0.get() >> 8 }
-// }
-
 impl core::fmt::Debug for FileLocation {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let (chunk, pos) = (self.get_chunk(), self.get_offset());
+        let (chunk, pos) = (self.chunk(), self.offset());
         write!(f, "FileLocation {{ chunk: {chunk}, pos: {pos} }}")
         // f.debug_struct("FileLocation").field("chunk", &chunk).field("offset", &pos).finish()
     }
@@ -135,55 +120,40 @@ impl core::fmt::Debug for FileLocation {
 
 
 /*************************** Implementations with std ***************************/
-// TODO: add std feature gate to this whole section
-pub mod file_data_source;
-
-pub use file_data_source::FileDataSource;
-
-pub mod mlv_reader;
-pub use mlv_reader::BlockReader;
-
-
+pub mod block_reader;
+pub use block_reader::BlockReader;
 
 
 /***************** TOP LEVEL READER IMPLEMENTATION *****************/
 
-use std::{io::BufReader, fs::File, path::Path, fmt::Debug, collections::HashMap};
+use std::{io::BufReader, fs::File, path::Path, fmt::Debug};
 
-const MAX_BLOCK_STORED_SIZE: usize = 512;
+use crate::decode::decode_packed12;
 
-#[derive(Clone,Copy,Debug)]
-pub struct VidfFrameInfo {
-    pub block_location: FileLocation,
-    pub data_offset: u32,
-    pub data_bytes: u32, /* Useful when compressed */
+#[derive(Clone,Copy,Debug,PartialEq)]
+pub struct BlockEntry {
+    pub block: BlockHeader,
+    pub location: FileLocation,
+    // pub data: Option<Vec<u8>>,
 }
-
-// #[derive(Debug)]
-// pub struct AudfFrameInfo {
-//     pub block_location: FileLocation,
-//     pub data_offset: u32,
-//     pub data_bytes: u32, /* Useful when compressed */
-// }
 
 #[derive(Debug)]
 pub struct MainReader<Reader> {
-    pub core_blocks: CoreBlocks,
+    core_blocks: CoreBlocks,
     chunk_files: Vec<BlockReader<Reader>>, /* TODO: abstract the block source/make BlockReader into a trait (?) */
-    all_blocks: Vec<(BlockHeader,FileLocation,Option<Vec<u8>>)>,
+    all_blocks: Vec<BlockEntry>,
     all_vidf: Vec<FileLocation>,
     all_audf: Vec<FileLocation>,
-    // /* Information about blocks based on type: (Location, TimeStamp, Optional data after header) */
-    // by_type: HashMap<BlockTag, Vec<(FileLocation,TimeStamp,Option<Vec<u8>>)>>,
 }
 
-impl MainReader<BufReader<File>>
+
+#[cfg(feature = "std")]
+impl MainReader<utils::ReadSeekFromStdIo<BufReader<File>>>
 {
-    #[inline]
     pub fn open_mlv<P: AsRef<Path>>(path: P) -> Option<Self>
     {
-        /* TODO: search for chunks (and limit to 101) */
-        let mut chunk_files = vec![BlockReader::new(BufReader::new(File::open(path).ok()?), 0)?];
+        /* TODO: search for all chunks (and limit to 101) */
+        let mut chunk_files = vec![BlockReader::new(utils::ReadSeekFromStdIo(BufReader::new(File::open(path).ok()?)))?];
 
         /* Create empty reader/index object */
         let mut reader = Self::empty();
@@ -191,15 +161,29 @@ impl MainReader<BufReader<File>>
         /* TODO: Use rayon par iter maybe?? */
         for (chunk_index, file) in chunk_files.iter_mut().enumerate() {
             loop {
-                if let Some(block_info) = file.get_block_info() {
+                if let Some(block_info) = file.block_info() {
                     if block_info.block_type != "NULL" {
-                        reader.add_block(
-                            block_info,
-                            FileLocation::new(chunk_index as u8, file.get_block_position())?,
-                            None /* TODO: read block into u8 vec and pass it here.
-                            (And then find a better way of doing it with less allocations) */
+                        reader.all_blocks.push(
+                            BlockEntry {
+                                block: block_info,
+                                location: FileLocation::new(chunk_index as u8, file.block_position())?
+                            }   
                         );
-                        // if block_info.block_type == 
+                        /* TODO: put this block loading at the end */
+                        fn try_into<const N: usize>(out: &mut Option<[u8; N]>, data: Option<&[u8]>) {
+                            if let Some(data) = data {
+                                if out.is_none() && data.len() >= N {
+                                    *out = Some(core::array::from_fn(|i| data[i]));
+                                }
+                            }
+                        }
+                        if block_info.block_type == "MLVI" {
+                            try_into(&mut reader.core_blocks.mlvi, file.block_bytes());
+                        } else if block_info.block_type == "RAWI" {
+                            try_into(&mut reader.core_blocks.rawi, file.block_bytes());
+                        } else if block_info.block_type == "WAVI" {
+                            try_into(&mut reader.core_blocks.wavi, file.block_bytes());
+                        }
                     }
                 }
                 else { break; }
@@ -209,59 +193,66 @@ impl MainReader<BufReader<File>>
 
         reader.chunk_files = chunk_files;
 
-        /* Set first block's timestamp to 0, as it was filled with version string before */
-        // all_blocks[0].0.time_stamp = 0;
-
         /* Sort by timestamp */
-        // all_blocks.sort_unstable_by(|a,b| a.0.time_stamp.cmp(&b.0.time_stamp));
+        reader.all_blocks.sort_unstable_by(|a,b| a.block.time_stamp.cmp(&b.block.time_stamp));
 
-        /* Finalise index (generic) */
 
-        reader.finalise();
+        /***************************************************************************/
+        /******************************* Finalisation ******************************/
+        /***************************************************************************/
+
+        reader.all_vidf = reader.all_blocks.iter().filter_map(|b| {
+            (b.block.block_type == "VIDF").then_some(b.location)
+        }).collect();
+
+        reader.all_audf = reader.all_blocks.iter().filter_map(|b| {
+            (b.block.block_type == "AUDF").then_some(b.location)
+        }).collect();
+
+        /***************************************************************************/
 
         Some(reader)
     }
 }
 
-impl<Reader> MainReader<Reader> {
-    pub fn get_num_frames(&self) -> u32 {
-        self.all_vidf.len() as u32
-    }
-
-    pub fn decode_frame(&mut self, idx: u32) -> Option<Vec<u16>>
-    where
-        Reader: std::io::Read + std::io::Seek
-    {
-        let file_location = self.all_vidf.get(idx as usize)?;
-        let file = &mut self.chunk_files[file_location.get_chunk() as usize].file;
-        file.seek(std::io::SeekFrom::Start(file_location.get_offset() + 4)).ok()?;
-
-        let mut size = [0u8; 4];
-        file.read_exact(&mut size).ok()?;
-        file.seek(std::io::SeekFrom::Current(8)).ok()?; /* Skip Timestamp */
-        file.seek(std::io::SeekFrom::Current(12)).ok()?; /* Skip the unnecessary fields in VIDF, to get to offset */
-
-        let mut data_offset = [0u8; 4];
-        file.read_exact(&mut data_offset).ok()?;
-
-        let size = u32::from_le_bytes(size);
-        let data_offset = u32::from_le_bytes(data_offset);
-
-        file.seek(std::io::SeekFrom::Current(data_offset as i64)).ok()?; /* Skip to frame data */
-
-        let frame_data_size = (size - (data_offset + 32)) as usize;
-        let mut data = Vec::with_capacity(frame_data_size);
-        unsafe { data.set_len(frame_data_size) }
-
-        file.read_exact(&mut data).ok()?;
-
-        /* TODO: decode 14-bit and compression here */
-        let frame_max_length = 1000000000000000; /* TODO: multiply width*height here */
-        Some(decode::decode_packed12(&data).take(frame_max_length).collect())
-    }
+macro_rules! time {
+    ($block:block) => {{
+        let start = std::time::Instant::now();
+        let result = {$block};
+        let duration_ms = start.elapsed().as_micros() as f64 / 1000.0;
+        println!("Operation took {:.1} ms", duration_ms);
+        result
+    }};
 }
 
-impl<T> MainReader<T> {
+pub enum FrameCountInfo {
+    NotAllParsed{total: u32, dropped: u32},
+    AllParsed{total: u32, dropped: u32},
+}
+
+impl<Reader> MainReader<Reader>
+{
+    pub fn width(&self) -> Option<u32> {
+        blocks::get_u16(&self.core_blocks.rawi?, blocks::RAWI.field_offset("xRes")?).map(|x| x as u32)
+    }
+    pub fn height(&self) -> Option<u32> {
+        blocks::get_u16(&self.core_blocks.rawi?, blocks::RAWI.field_offset("yRes")?).map(|x| x as u32)
+    }
+    pub fn black_level(&self) -> Option<i32> {
+        blocks::get_i32(&self.core_blocks.rawi?, blocks::RAWI.field_offset("black_level")?)
+    }
+    pub fn white_level(&self) -> Option<i32> {
+        blocks::get_i32(&self.core_blocks.rawi?, blocks::RAWI.field_offset("white_level")?)
+    }
+    pub fn bitdepth(&self) -> Option<i32> {
+        blocks::get_i32(&self.core_blocks.rawi?, blocks::RAWI.field_offset("bits_per_pixel")?)
+    }
+    pub fn is_compressed(&self) -> Option<bool> {
+        const MLV_VIDEO_CLASS_FLAG_LJ92: u16 = 0x20;
+        let class = blocks::get_u16(&self.core_blocks.mlvi?, blocks::MLVI.field_offset("videoClass")?);
+        Some(class? & MLV_VIDEO_CLASS_FLAG_LJ92 != 0)
+    }
+
     fn empty() -> Self {
         Self {
             chunk_files: vec![],
@@ -269,117 +260,62 @@ impl<T> MainReader<T> {
             all_blocks: Vec::new(),
             all_vidf: vec![],
             all_audf: vec![],
-            // by_type: HashMap::new(),
-        }
-    }
-
-    fn add_block(&mut self, info: BlockHeader, location: FileLocation, data: Option<Vec<u8>>) {
-        self.all_blocks.push((info, location, data));
-    }
-
-    fn finalise(&mut self) {
-        /* Sort blocks */
-        self.all_blocks.sort_unstable_by(|a,b| a.2.cmp(&b.2));
-
-        for (block_info, location, data) in self.all_blocks.iter() {
-            if block_info.block_type == "VIDF" {
-                self.all_vidf.push(*location);
-            } else if block_info.block_type == "AUDF" {
-                self.all_audf.push(*location);
-            } else {
-                /* Hashmap by block type? */
-                // self.by_type.entry(block_info.block_type).or_insert_with(|| vec![]).push((*location,block_info.time_stamp,data.clone()));
-            }
         }
     }
     
     pub fn print_blocks(&self) {
-        for (block_info, _location, _data) in self.all_blocks.iter() {
-            if block_info.block_type != "VIDF" && block_info.block_type != "AUDF" {
-                println!("{:?} : {} bytes", block_info.block_type, block_info.block_size);
+        for b in self.all_blocks.iter() {
+            if b.block.block_type != "VIDF" && b.block.block_type != "AUDF" {
+                println!("{:?} : {} bytes", b.block.block_type, b.block.block_size);
             }
         }
         println!("Total blocks: {}", self.all_blocks.len());
     }
 
-    /* Returns latest block of type at timestamp */
-    pub fn get_block(&self, block_type: BlockTag, timestamp: TimeStamp) -> Option<&(FileLocation,TimeStamp,Option<Vec<u8>>)> {
-        // self.by_type.get(&block_type)?.get(block_number)
-        todo!()
+    pub fn num_frames(&self) -> u32 {
+        self.all_vidf.len() as u32
+    }
+
+    pub fn decode_frame<'a>(&mut self, idx: u32, output: &'a mut [u16]) -> Option<&'a [u16]>
+    where
+        Reader: Read + Seek
+    {
+        println!("decoding 1...");
+
+        let file_location = self.all_vidf.get(idx as usize)?;
+        let file = &mut self.chunk_files[file_location.chunk() as usize].file;
+        // println!("decoding 2...");
+        file.seek(SeekFrom::Start(file_location.offset() + 4)).ok()?;
+
+        let mut size = [0u8; 4];
+        file.read_exact(&mut size).ok()?;
+        file.seek(SeekFrom::Current(20)).ok()?; /* Skip Timestamp and other VIDF fields to get to offset */
+
+        let mut data_offset = [0u8; 4];
+        file.read_exact(&mut data_offset).ok()?;
+
+        let size = u32::from_le_bytes(size);
+        let data_offset = u32::from_le_bytes(data_offset);
+
+        file.seek(SeekFrom::Current(data_offset as i64)).ok()?; /* Skip to frame data */
+
+        let frame_data_size = (size - (data_offset + 32)) as usize;
+        let mut data = Vec::with_capacity(frame_data_size);
+        unsafe { data.set_len(frame_data_size) }
+        file.read_exact(&mut data).ok()?;
+
+        /* Decode the frame */
+        time! {{
+            // let max_length = (self.width()? * self.height()?) as usize;
+            match (self.bitdepth()?, self.is_compressed()?) {
+                (14, false) => decode::decode_packed14(&data, output),
+                (12, false) => decode::decode_packed12(&data, output),
+                (10, false) => decode::decode_packed10(&data, output),
+                (_, true) => {decode::decode_lj92(&data, output);},
+                _ => {}, /* Unsupported format */
+            }
+        }}
+
+        return Some(&output[..]);
     }
 }
-
-// #[derive(Debug)]
-// pub struct FullIndex {
-//     indexed_blocks: Vec<(BlockHeader,FileLocation)>,
-//     unindexed_blocks: Vec<(BlockHeader,FileLocation)>,
-//     // all_vidf: Vec<Option<(FileLocation, u32)>>,
-//     // all_audf: Vec<Option<(FileLocation, u32)>>,
-// }
-
-
-
-
-
-
-// /***************** READER IMPLEMENTATION *****************/
-
-// // pub struct MLVReader {
-// //     file: Reader,
-// //     index: Vec<crate::index::IndexEntry>
-// // }
-
-
-
-
-// // #[derive(Debug)]
-// // pub struct File<T> {files: Vec<T>}
-// // impl<T> DataSource for File<T>
-// // where
-// //     T: Read
-
-// use std::io::Read;
-
-// /* A bufreader is recommended  */
-// pub struct BlockReader<T> {
-//     file: T,
-//     current_block: [u8; 4],
-//     current_block_size: u32,
-//     current_block_timestamp: u64,
-//     current_block_position: u64,
-// }
-
-// impl<T> BlockReader<T>
-// where
-//     T: Read
-// {
-//     #[inline]
-//     pub fn create(file: T) -> Option<Self> {
-//         Some(Self { file, current_block: [0; 4], current_block_size: 0, current_block_timestamp: 0, current_block_position: 0 })
-//     }
-
-//     #[inline]
-//     pub fn next(&mut self) -> Option<[u8; 4]> {
-//         todo!()
-//     }
-
-//     #[inline]
-//     pub fn read_current_block_data(
-//         &mut self,
-//         offset_from_start_of_block: u32,
-//         out: &mut [u8]
-//     ) -> Option<u64> {
-//         if offset_from_start_of_block < 16 {
-//             let header_bytes = self.current_block.iter()
-//                 .chain(self.current_block_size.to_le_bytes().iter())
-//                 .chain(self.current_block_size.to_le_bytes().iter())
-//                 .copied()
-//                 .skip(offset_from_start_of_block as usize);
-//             let (head,bytes) = out.split_at_mut((offset_from_start_of_block - 16) as usize);
-//         }
-//         todo!()
-//     }
-// }
-
-
-

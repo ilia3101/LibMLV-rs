@@ -1,20 +1,15 @@
-use std::io::{BufReader, Seek, SeekFrom};
-use std::fs::File;
-
-// fn open_file(path: &str) -> Option<(BufReader<File>, u64)> {
-//     let mut file = File::open(path).ok()?;
-//     file.seek(SeekFrom::End(0)).ok()?;
-//     let size = file.stream_position().ok()?;
-//     Some((BufReader::new(file), size))
-// }
-// let (the_file, file_size) = open_file(file_name).unwrap();
-// let mut reader = MLVReader::new(the_file, file_size as usize).unwrap();
-// reader.next();
+macro_rules! time {
+    ($name:expr, $block:block) => {{
+        let start = std::time::Instant::now();
+        let result = {$block};
+        let duration_ms = start.elapsed().as_micros() as f64 / 1000.0;
+        println!("Operation \"{}\" took {:.1} ms", $name, duration_ms);
+        result
+    }};
+}
 
 pub fn main()
 {
-    println!("mlv_file_hdr size: {}", std::mem::size_of::<mlv::blocks::FileHeader>());
-    println!("IndexEntry size: {}", std::mem::size_of::<mlv::index::IndexEntry>());
     println!("FileLocation size: {}", std::mem::size_of::<mlv::FileLocation>());
     println!("Option<FileLocation> size: {}", std::mem::size_of::<Option<mlv::FileLocation>>());
     println!("FileLocation alignment: {}", std::mem::align_of::<mlv::FileLocation>());
@@ -22,8 +17,8 @@ pub fn main()
 
     let p = mlv::FileLocation::new(12,777777777777);
     if let Some(p) = p {
-        println!("{:#?}", p.get_chunk());
-        println!("{:#?}", p.get_offset());
+        println!("{:#?}", p.chunk());
+        println!("{:#?}", p.offset());
     }
     println!("{:#?}", p);
 
@@ -44,11 +39,39 @@ pub fn main()
     println!("File indexed and loaded in {:.1?} ms", (end.duration_since(start).unwrap().as_micros()) as f64 / 1000.0);
 
 
-    let data = reader.decode_frame(0).unwrap().into_iter().flat_map(|a| {
-        std::iter::repeat((a as f32 * 0.025) as u8).take(3)
-    }).collect::<Vec<_>>();
+    for (name, block) in mlv::blocks::MLV_BLOCKS.iter() {
+        println!("Block {}: {:#?} bytes", name, block.size());
+    }
 
-    save_bmp(640, 320, &data, &mut std::fs::File::create("test.bmp").unwrap());
+    // (3.84*1.536)*(1000/43)
+
+    let wl = reader.white_level().unwrap() as f32;
+    let bl = reader.black_level().unwrap() as f32;
+    let width = reader.width().unwrap() as u32;
+    let height = reader.height().unwrap() as u32;
+    let exposure = 5.0;
+
+    let mut decoded_buf = vec![0u16; (width * height) as usize];
+
+    let num_decodes = 500;
+    let start = std::time::Instant::now();
+    let mut decoded = reader.decode_frame(0, &mut decoded_buf).unwrap();
+    for i in 1..num_decodes {
+        decoded = reader.decode_frame(i % 10, &mut decoded_buf).unwrap();
+    }
+    let duration_ms = start.elapsed().as_micros() as f64 / 1000.0;
+    println!("Frame decoding took {:.1} ms", duration_ms);
+    let megapixels_per_second: f64 = (width as f64 / 1000. * height as f64 / 1000.) * (num_decodes as f64) * (1000. / duration_ms);
+    println!("Decoded {:.1} MPixels in {:.1} ms ({:.1} MPixels/s)", (width as f64 * height as f64 * num_decodes as f64) / 1_000_000., duration_ms, megapixels_per_second);
+    // let decoded = reader.decode_frame(0, &mut decoded_buf).unwrap();
+
+    let data = time!("Processing",{ decoded.iter().copied().flat_map(|a| {
+        std::iter::repeat((((a as f32 - bl) / (wl-bl) * exposure).sqrt() * 255.0) as u8).take(3)
+    }).collect::<Vec<_>>() });
+
+    println!("Width: {}, Height: {}", width, height);
+
+    /* time! {{  */save_bmp(width, height, &data, &mut std::fs::File::create("test.bmp").unwrap()) /* }}; */
 }
 
 fn save_bmp(width: u32, height: u32, data: &[u8], file: &mut impl std::io::Write) {

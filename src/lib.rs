@@ -144,7 +144,7 @@ pub struct BlockEntry {
 #[derive(Debug)]
 pub struct MainReader<Reader> {
     pub core_blocks: CoreBlocks,
-    pub chunk_files: Vec<(Reader, u64)>, /* TODO: maybe don't keep this inside of this object and have it be external */
+    pub chunk_files: Vec<(Reader, u64)>, /* TODO: maybe don't keep this inside of this object and have it be external!!! */
     pub all_blocks: Vec<BlockEntry>,
     /* All VIDF/AUDF blocks (file location of Block, timestamp, data offset, data length) */
     pub all_audf: Vec<(FileLocation, u64, u64, u32)>,
@@ -203,7 +203,7 @@ impl MainReader<BufReader<File>>
                             let block_size = block_info.block_size;
                             let frame_data_offset = u32::from_le_bytes(*block_bytes[20..].first_chunk().unwrap());
                             let offset_in_file = block_position + 24 + frame_data_offset as u64;
-                            let frame_data_size = (block_size as u32 - (frame_data_offset as u32 + 32)) as u32;
+                            let frame_data_size = (block_size as u32 - (frame_data_offset as u32 + 24)) as u32;
                             reader.all_audf.push((location, block_info.time_stamp, offset_in_file, frame_data_size)); // TODO: block
                         }
                     }
@@ -221,6 +221,20 @@ impl MainReader<BufReader<File>>
         reader.all_audf.sort_unstable_by(|a,b| a.1.cmp(&b.1));
 
         Some(reader)
+    }
+}
+
+pub trait ReadExact {
+    type ReadError;
+    fn read_exact(&mut self, pos: u64, buf: &mut [u8]) -> Result<(), Self::ReadError>;
+}
+
+#[cfg(feature = "std")]
+impl<R: std::io::Read + std::io::Seek> ReadExact for R {
+    type ReadError = std::io::Error;
+    fn read_exact(&mut self, pos: u64, buf: &mut [u8]) -> Result<(), Self::ReadError> {
+        self.seek(std::io::SeekFrom::Start(pos))?;
+        self.read_exact(buf)
     }
 }
 
@@ -302,23 +316,22 @@ impl<Reader> MainReader<Reader>
     // returns none if out buffer is not big enough
     pub fn get_frame_payload<'a>(&mut self, idx: u32, mut out: &'a mut [u8]) -> Option<&'a [u8]>
     where
-        Reader: std::io::Read + std::io::Seek
+        Reader: ReadExact
     {
         let (file_location, frame_data_size) = self.frame_data_location_and_size(idx)?;
         if out.len() < frame_data_size as usize {
             return None // output buffer too small
         } else {
             let file = &mut self.chunk_files[file_location.chunk() as usize].0;
-            file.seek(std::io::SeekFrom::Start(file_location.offset())).ok()?;
             out = &mut out[0..frame_data_size as usize];
-            let result = file.read_exact(&mut out).ok()?;
+            let result = file.read_exact(file_location.offset(), &mut out).ok()?;
             return Some(out)
         }
     }
 
     pub fn decode_frame<'a>(&mut self, idx: u32, output: &'a mut [u16]) -> Option<&'a [u16]>
     where
-        Reader: std::io::Read + std::io::Seek
+        Reader: ReadExact
     {
         let (file_location, frame_data_size) = self.frame_data_location_and_size(idx)?;
 
@@ -349,7 +362,7 @@ impl<Reader> MainReader<Reader>
      * TODO: make this a flatmappable iterator */
     pub fn read_audio(&mut self) -> Option<Vec<i16>>
     where
-        Reader: std::io::Read + std::io::Seek
+        Reader: ReadExact
     {
         let mut audio_buffer = vec![];
         let mut chunk_buffer = vec![];
@@ -357,8 +370,7 @@ impl<Reader> MainReader<Reader>
             chunk_buffer.clear();
             chunk_buffer.reserve(size as usize);
             unsafe { chunk_buffer.set_len(size as usize); }
-            self.chunk_files[location.chunk() as usize].0.seek(std::io::SeekFrom::Start(pos)).ok()?;
-            self.chunk_files[location.chunk() as usize].0.read_exact(&mut chunk_buffer).ok()?;
+            self.chunk_files[location.chunk() as usize].0.read_exact(pos, &mut chunk_buffer).ok()?;
             for chunk in chunk_buffer.as_chunks().0.iter() {
                 audio_buffer.push(i16::from_le_bytes(*chunk))
             }

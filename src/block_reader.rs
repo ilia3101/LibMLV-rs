@@ -10,8 +10,10 @@ pub enum ReadBlocksError<ReadErrorType> {
     ReadError(ReadErrorType),
 }
 
-/* TODO: make this an std-gated feature */
+#[cfg(feature = "std")]
 use std::io::{self, Read, Seek, SeekFrom};
+
+#[cfg(feature = "std")]
 pub fn read_wrapper<File>(mut file: File) -> impl FnMut(u64, &mut [u8]) -> io::Result<()>
 where
     File: Read + Seek

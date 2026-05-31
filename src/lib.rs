@@ -155,8 +155,10 @@ pub struct MainReader<Reader> {
 #[cfg(feature = "std")]
 impl MainReader<BufReader<File>>
 {
-    pub fn open_mlv<P: AsRef<Path>>(path: P) -> Option<Self>
-    {
+    pub fn open_mlv<P: AsRef<Path>>(
+        path: P,
+        max_frames: Option<u32>
+    ) -> Option<Self> {
         /* TODO: search for all chunks (and limit to 101) */
         // let mut chunk_files = vec![BlockReader::new(utils::ReadSeekFromStdIo(BufReader::new(File::open(path).ok()?)))?];
         let mut file = File::open(path).ok()?;
@@ -166,9 +168,10 @@ impl MainReader<BufReader<File>>
         /* Create empty reader/index object */
         let mut reader = Self::empty();
 
+        let mut num_vidf = 0u32;
+
         /* TODO: Use rayon par iter maybe?? */
         for (chunk_index, (file, file_length)) in chunk_files_and_lengths.iter_mut().enumerate() {
-            // let
             let result = block_reader::read_blocks::<200, _>(
                 *file_length,
                 block_reader::read_wrapper(file),
@@ -199,6 +202,10 @@ impl MainReader<BufReader<File>>
                             let offset_in_file = block_position + 32 + frame_data_offset as u64;
                             let frame_data_size = (block_size as u32 - (frame_data_offset as u32 + 32)) as u32;
                             reader.all_vidf.push((location, block_info.time_stamp, offset_in_file, frame_data_size)); // TODO: block
+                            num_vidf += 1;
+                            if let Some(max_frames) = max_frames && max_frames == num_vidf {
+                                return true;
+                            }
                         } else if block_info.block_type == "AUDF" {
                             let block_size = block_info.block_size;
                             let frame_data_offset = u32::from_le_bytes(*block_bytes[20..].first_chunk().unwrap());
@@ -335,15 +342,13 @@ impl<Reader> MainReader<Reader>
     {
         let (file_location, frame_data_size) = self.frame_data_location_and_size(idx)?;
 
+        // TODO: allow passing temporary buffer for frame decode
         let mut data = Vec::with_capacity(frame_data_size as usize);
         unsafe { data.set_len(frame_data_size as usize) }
 
         self.get_frame_payload(idx, &mut data);
 
         /*************************** Decode the frame ***************************/
-        let start = std::time::Instant::now();
-
-        // let max_length = (self.width()? * self.height()?) as usize;
         match (self.bitdepth()?, self.is_compressed()?) {
             (14, false) => decode::decode_packed14(&data, output),
             (12, false) => decode::decode_packed12(&data, output),
@@ -351,9 +356,6 @@ impl<Reader> MainReader<Reader>
             (_, true) => {decode::decode_lj92(&data, output);},
             _ => {}, /* Unsupported format */
         }
-
-        let duration_ms = start.elapsed().as_micros() as f64 / 1000.0;
-        println!("Decoding took {:.1} ms", duration_ms);
 
         return Some(&output[..]);
     }

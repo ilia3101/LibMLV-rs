@@ -10,27 +10,12 @@ macro_rules! time {
 
 pub fn main()
 {
-    println!("FileLocation size: {}", std::mem::size_of::<mlv::FileLocation>());
-    println!("Option<FileLocation> size: {}", std::mem::size_of::<Option<mlv::FileLocation>>());
-    println!("FileLocation alignment: {}", std::mem::align_of::<mlv::FileLocation>());
-    // panic!("s");
-
-    let p = mlv::FileLocation::new(12,777777777777);
-    if let Some(p) = p {
-        println!("{:#?}", p.chunk());
-        println!("{:#?}", p.offset());
-    }
-    println!("{:#?}", p);
-
-    // /* Reader test */
+    /* Reader test */
     let file_name = &std::env::args().collect::<Vec<_>>()[1];
     println!("{file_name}");
-    // let file = FileDataSource::open(file_name).unwrap();
-    // println!("{file:#?}");
 
-    // let mut reader = mlv::mlv_reader::MLVReader::new(std::io::BufReader::new(std::fs::File::open(file_name).unwrap()), 0);
     let start = std::time::SystemTime::now();
-    let mut reader = mlv::MainReader::open_mlv(file_name).unwrap();
+    let mut reader = mlv::MainReader::open_mlv(file_name, None).unwrap();
     let end = std::time::SystemTime::now();
 
     println!("reader: {:#?}", reader);
@@ -51,15 +36,16 @@ pub fn main()
 
     let mut decoded_buf = vec![0u16; (width * height) as usize];
 
-    let num_decodes = 1;
-    let start = std::time::Instant::now();
+    let num_decodes = 5;
 
+    let start = std::time::Instant::now();
     let mut decoded = reader.decode_frame(0, &mut decoded_buf).unwrap();
     for i in 1..num_decodes {
-        decoded = reader.decode_frame(i % 10, &mut decoded_buf).unwrap();
+        decoded = reader.decode_frame(i % reader.num_frames(), &mut decoded_buf).unwrap();
     }
     let duration_ms = start.elapsed().as_micros() as f64 / 1000.0;
-    println!("Frame decoding took {:.1} ms", duration_ms);
+
+    println!("Frame decoding took {:.1} ms", duration_ms / num_decodes as f64);
     let megapixels_per_second: f64 = (width as f64 / 1000. * height as f64 / 1000.) * (num_decodes as f64) * (1000. / duration_ms);
     println!("Decoded {:.1} MPixels in {:.1} ms ({:.1} MPixels/s)", (width as f64 * height as f64 * num_decodes as f64) / 1_000_000., duration_ms, megapixels_per_second);
     // let decoded = reader.decode_frame(0, &mut decoded_buf).unwrap();

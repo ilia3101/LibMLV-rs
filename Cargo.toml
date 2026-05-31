@@ -3,6 +3,8 @@ name = "libmlv"
 version = "0.1.0"
 edition = "2024"
 repository = "https://github.com/ilia3101/LibMLV-rs"
+description = "Read MLV (magic lantern video) files."
+license = "GPL-3.0-only or GPL-2.0-only or MIT or Apache-2.0"
 include = [
     "src/*.rs",
     "src/bin/*.rs",
@@ -13,7 +15,7 @@ include = [
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rawloader = { version = "*", optional = true }
+rawloader = { version = "0.37.1", optional = true }
 hound = { version = "3", optional = true }
 
 [lib]
@@ -32,6 +34,10 @@ required-features = ["raw2mlv-deps"]
 [[bin]]
 name = "index_demo"
 required-features = []
+
+[[bin]]
+name = "speed_test"
+required-features = ["raw2mlv-deps"]
 
 [[bin]]
 name = "extract_audio"

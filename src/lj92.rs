@@ -1,3 +1,4 @@
+#![cfg_attr(rustfmt, rustfmt_skip)]
 /*
 lj92.rs
 (c) Andrew Baldwin 2014

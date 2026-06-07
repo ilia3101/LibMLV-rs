@@ -1,5 +1,6 @@
+#![cfg_attr(rustfmt, rustfmt_skip)]
 pub mod blocks;
-pub mod decode;
+pub mod codec;
 pub mod lj92;
 
 pub enum MLVError {
@@ -74,10 +75,9 @@ mod util_types {
     pub struct CoreBlocks {
         pub mlvi: Option<[u8; 52]>,
         pub rawi: Option<[u8; 180]>,
-        // pub rawc: Option<blocks::Rawc>,
         pub wavi: Option<[u8; 32]>,
-        /* TODO. */
-        // pub idnt: Option<(u64, IDNT)>,
+        pub idnt: Option<[u8; 84]>,
+        // pub rawc: Option<blocks::Rawc>,
         // pub diso: Option<(u64, DISO)>,
         // pub expo: Option<(u64, EXPO)>,
         // pub rtci: Option<(u64, RTCI)>,
@@ -141,13 +141,15 @@ pub struct BlockEntry {
 //     data: [u8; BLOCK_MAX_STORE_SIZE],
 // }
 
+/** Main class for reading MLV files */
 #[derive(Debug)]
 pub struct MainReader<Reader> {
     pub core_blocks: CoreBlocks,
     pub chunk_files: Vec<(Reader, u64)>, /* TODO: maybe don't keep this inside of this object and have it be external!!! */
     pub all_blocks: Vec<BlockEntry>,
-    /* All VIDF/AUDF blocks (file location of Block, timestamp, data offset, data length) */
+    /** All AUDF blocks (file location of Block, timestamp, data offset, data length) */
     pub all_audf: Vec<(FileLocation, u64, u64, u32)>,
+    /** All VIDF blocks (file location of Block, timestamp, data offset, data length) */
     pub all_vidf: Vec<(FileLocation, u64, u64, u32)>,
 }
 
@@ -196,6 +198,8 @@ impl MainReader<BufReader<File>>
                             try_into(&mut reader.core_blocks.rawi, Some(block_bytes));
                         } else if block_info.block_type == "WAVI" {
                             try_into(&mut reader.core_blocks.wavi, Some(block_bytes));
+                        } else if block_info.block_type == "IDNT" {
+                            try_into(&mut reader.core_blocks.idnt, Some(block_bytes));
                         } else if block_info.block_type == "VIDF" {
                             let block_size = block_info.block_size;
                             let frame_data_offset = u32::from_le_bytes(*block_bytes[28..].first_chunk().unwrap());
@@ -271,6 +275,15 @@ impl<Reader> MainReader<Reader>
 
     pub fn bitdepth(&self) -> Option<i32> {
         blocks::get_i32(&self.core_blocks.rawi?, blocks::RAWI.field_offset("bits_per_pixel")?)
+    }
+
+    pub fn colour_matrix(&self) -> Option<[[f32; 3]; 3]> {
+        let get = |i: u32| { Some(blocks::get_i32(&self.core_blocks.rawi?, blocks::RAWI.field_offset("color_matrix1")? + 4 * i)? as f32) };
+        Some([
+            [get(0)? / get(1)?, get(2)? / get(3)?, get(4)? / get(5)?],
+            [get(6)? / get(7)?, get(8)? / get(9)?, get(10)? / get(11)?],
+            [get(12)? / get(13)?, get(14)? / get(15)?, get(16)? / get(17)?]
+        ])
     }
 
     pub fn is_compressed(&self) -> Option<bool> {
@@ -350,10 +363,10 @@ impl<Reader> MainReader<Reader>
 
         /*************************** Decode the frame ***************************/
         match (self.bitdepth()?, self.is_compressed()?) {
-            (14, false) => decode::decode_packed14(&data, output),
-            (12, false) => decode::decode_packed12(&data, output),
-            (10, false) => decode::decode_packed10(&data, output),
-            (_, true) => {decode::decode_lj92(&data, output);},
+            (14, false) => codec::decode_packed14(&data, output),
+            (12, false) => codec::decode_packed12(&data, output),
+            (10, false) => codec::decode_packed10(&data, output),
+            (_, true) => {codec::decode_lj92(&data, output);},
             _ => {}, /* Unsupported format */
         }
 

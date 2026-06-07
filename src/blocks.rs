@@ -1,6 +1,6 @@
 #![allow(non_snake_case)]
+#![cfg_attr(rustfmt, rustfmt_skip)]
 // #![allow(non_camel_case_types)]
-
 
 /********************** Type defiintions and mactos **********************/
 
@@ -8,7 +8,7 @@
 
 const SIGNED_BIT: u8 = 0x80;
 
-#[derive(Debug,Clone,Copy)]
+#[derive(Debug, Clone, Copy)]
 #[repr(u8)]
 pub enum PrimitiveType {
     U8 = 1, U16 = 2, U32 = 4, U64 = 8,
@@ -20,7 +20,7 @@ impl PrimitiveType {
     #[inline] pub const fn size(self) -> u32 { self as u32 & !SIGNED_BIT as u32 }
 }
 
-#[derive(Debug,Clone,Copy)]
+#[derive(Debug, Clone, Copy)]
 pub enum FieldType {
     Single(PrimitiveType),
     Array(PrimitiveType, u32),
@@ -36,16 +36,16 @@ impl FieldType {
     }
 }
 
-#[derive(Debug,Copy,Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct FieldDefinition {
     pub name: &'static str,
     pub data_type: FieldType,
 }
 
-#[derive(Debug,Copy,Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct BlockDefinition {
     pub start_offset: u32,
-    pub fields: &'static[FieldDefinition],
+    pub fields: &'static [FieldDefinition],
 }
 
 impl BlockDefinition {
@@ -254,9 +254,9 @@ mlv_all_block_def! {
     }
 
     RAWC {
-        blockType: [u8; 4],         /* RAWC - raw image capture information */
-        blockSize: u32,           /* sizeof(mlv_rawc_hdr_t) */
-        timestamp: u64,           /* hardware counter timestamp */
+        // blockType: [u8; 4],
+        // blockSize: u32,
+        // timestamp: u64,
 
         /* see struct raw_capture_info from raw.h */
 
@@ -285,6 +285,12 @@ mlv_all_block_def! {
          *   .x2 (right) : offset_x + active_width  * (binning_x+skipping_x) + full_res.active_area.x1
          *   .y2 (bottom): offset_y + active_height * (binning_y+skipping_y) + full_res.active_area.y1
          */
+    }
+
+    IDNT {
+        cameraName: [u8; 32],       /* 1=Integer PCM, 6=alaw, 7=mulaw */
+        cameraModel: u32,           /* audio channel count: 1=mono, 2=stereo */
+        cameraSerial: [u8; 32],     /* audio sampling rate in 1/s */
     }
 }
 

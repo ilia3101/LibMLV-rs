@@ -2,6 +2,8 @@
 pub mod blocks;
 pub mod codec;
 pub mod lj92;
+pub use util_types::*;
+pub mod block_reader;
 
 pub enum MLVError {
     CorruptFile,
@@ -120,9 +122,6 @@ mod util_types {
     }
 }
 
-pub use util_types::*;
-pub mod block_reader;
-
 /***************** TOP LEVEL READER IMPLEMENTATION *****************/
 
 use std::{io::BufReader, fs::File, path::Path, fmt::Debug};
@@ -141,11 +140,56 @@ pub struct BlockEntry {
 //     data: [u8; BLOCK_MAX_STORE_SIZE],
 // }
 
+// An MLV file is presented using one of these
+pub trait DataSource {
+    type ReadError;
+    fn num_files(&self) -> u32;
+    fn file_size(&self, file: u32) -> u64;
+    fn read_exact(&mut self, file: u32, offset: u64, out: &mut [u8]) -> Result<(), Self::ReadError>;
+}
+
+#[cfg(feature = "std")]
+pub struct FileDataSource {
+    file_lengths: Vec<u64>,
+    file_positions: Vec<u64>,
+    files: Vec<std::io::BufReader<std::fs::File>>
+}
+
+#[cfg(feature = "std")]
+impl FileDataSource {
+    fn new(path: impl AsRef<Path>) -> Result<Self, Box<dyn std::error::Error>> {
+        //TODO: find chunk files (.M00 .M01 etc)
+        let file = File::open(path)?;
+        let filesize = file.metadata()?.len();
+        Ok(Self {file_lengths: vec![filesize], file_positions: vec![0], files: vec![BufReader::new(file)]})
+    }
+}
+
+#[cfg(feature = "std")]
+impl DataSource for FileDataSource {
+    type ReadError = Box<dyn std::error::Error>;
+    fn num_files(&self) -> u32 {
+        self.files.len() as u32
+    }
+    fn file_size(&self, file: u32) -> u64 {
+        return self.file_lengths[file as usize]
+    }
+    fn read_exact(&mut self, chunk: u32, read_pos: u64, out: &mut [u8]) -> Result<(), Self::ReadError> {
+        use std::io::Read;
+        let pos = self.file_positions[chunk as usize];
+        if read_pos != pos {
+            self.files[chunk as usize].seek_relative(read_pos as i64 - pos as i64)?;
+        }
+        self.file_positions[chunk as usize] = read_pos + out.len() as u64;
+        Ok(self.files[chunk as usize].read_exact(out).map(|_| ())?)
+    }
+}
+
 /** Main class for reading MLV files */
 #[derive(Debug)]
-pub struct MainReader<Reader> {
+pub struct MainReader<DataSource> {
     pub core_blocks: CoreBlocks,
-    pub chunk_files: Vec<(Reader, u64)>, /* TODO: maybe don't keep this inside of this object and have it be external!!! */
+    pub chunk_files: DataSource, /* TODO: maybe don't keep this inside of this object and have it be external!!! */
     pub all_blocks: Vec<BlockEntry>,
     /** All AUDF blocks (file location of Block, timestamp, data offset, data length) */
     pub all_audf: Vec<(FileLocation, u64, u64, u32)>,
@@ -155,33 +199,34 @@ pub struct MainReader<Reader> {
 
 
 #[cfg(feature = "std")]
-impl MainReader<BufReader<File>>
+impl MainReader<FileDataSource>
 {
     pub fn open_mlv<P: AsRef<Path>>(
         path: P,
         max_frames: Option<u32>
     ) -> Option<Self> {
         /* TODO: search for all chunks (and limit to 101) */
-        // let mut chunk_files = vec![BlockReader::new(utils::ReadSeekFromStdIo(BufReader::new(File::open(path).ok()?)))?];
-        let mut file = File::open(path).ok()?;
-        let mut filesize = file.metadata().unwrap().len();
-        let mut chunk_files_and_lengths = vec![(BufReader::new(file), filesize)];
+        let mut ds = FileDataSource::new(path).ok()?;
 
         /* Create empty reader/index object */
-        let mut reader = Self::empty();
+        let mut core_blocks = CoreBlocks::default();
+        let mut all_blocks = vec![];
+        let mut all_vidf = vec![];
+        let mut all_audf = vec![];
 
         let mut num_vidf = 0u32;
 
         /* TODO: Use rayon par iter maybe?? */
-        for (chunk_index, (file, file_length)) in chunk_files_and_lengths.iter_mut().enumerate() {
+        for chunk_index in 0..ds.num_files() {
+            let file_length = ds.file_size(chunk_index);
             let result = block_reader::read_blocks::<200, _>(
-                *file_length,
-                block_reader::read_wrapper(file),
+                file_length,
+                |pos: u64, out: &mut [u8]| ds.read_exact(chunk_index, pos, out),
                 |block_bytes: &[u8], block_position: u64| {
                     let block_info = BlockHeader::from_bytes(*block_bytes[0..16].first_chunk().unwrap());
                     if block_info.block_type != "NULL" { /* Skip null blocks */
                         let location = FileLocation::new(chunk_index as u8, block_position).unwrap();
-                        reader.all_blocks.push(
+                        all_blocks.push(
                             BlockEntry { block: block_info, location }
                         );
                         /* TODO: put this block loading at the end */
@@ -193,19 +238,19 @@ impl MainReader<BufReader<File>>
                             }
                         }
                         if block_info.block_type == "MLVI" {
-                            try_into(&mut reader.core_blocks.mlvi, Some(block_bytes));
+                            try_into(&mut core_blocks.mlvi, Some(block_bytes));
                         } else if block_info.block_type == "RAWI" {
-                            try_into(&mut reader.core_blocks.rawi, Some(block_bytes));
+                            try_into(&mut core_blocks.rawi, Some(block_bytes));
                         } else if block_info.block_type == "WAVI" {
-                            try_into(&mut reader.core_blocks.wavi, Some(block_bytes));
+                            try_into(&mut core_blocks.wavi, Some(block_bytes));
                         } else if block_info.block_type == "IDNT" {
-                            try_into(&mut reader.core_blocks.idnt, Some(block_bytes));
+                            try_into(&mut core_blocks.idnt, Some(block_bytes));
                         } else if block_info.block_type == "VIDF" {
                             let block_size = block_info.block_size;
                             let frame_data_offset = u32::from_le_bytes(*block_bytes[28..].first_chunk().unwrap());
                             let offset_in_file = block_position + 32 + frame_data_offset as u64;
                             let frame_data_size = (block_size as u32 - (frame_data_offset as u32 + 32)) as u32;
-                            reader.all_vidf.push((location, block_info.time_stamp, offset_in_file, frame_data_size)); // TODO: block
+                            all_vidf.push((location, block_info.time_stamp, offset_in_file, frame_data_size)); // TODO: block
                             num_vidf += 1;
                             if let Some(max_frames) = max_frames && max_frames == num_vidf {
                                 return true;
@@ -215,7 +260,7 @@ impl MainReader<BufReader<File>>
                             let frame_data_offset = u32::from_le_bytes(*block_bytes[20..].first_chunk().unwrap());
                             let offset_in_file = block_position + 24 + frame_data_offset as u64;
                             let frame_data_size = (block_size as u32 - (frame_data_offset as u32 + 24)) as u32;
-                            reader.all_audf.push((location, block_info.time_stamp, offset_in_file, frame_data_size)); // TODO: block
+                            all_audf.push((location, block_info.time_stamp, offset_in_file, frame_data_size)); // TODO: block
                         }
                     }
                     return true
@@ -224,32 +269,21 @@ impl MainReader<BufReader<File>>
             println!("Result = {:?}", result);
         }
 
-        reader.chunk_files = chunk_files_and_lengths;
-
         /* Sort by timestamp */
-        reader.all_blocks.sort_unstable_by(|a,b| a.block.time_stamp.cmp(&b.block.time_stamp));
-        reader.all_vidf.sort_unstable_by(|a,b| a.1.cmp(&b.1));
-        reader.all_audf.sort_unstable_by(|a,b| a.1.cmp(&b.1));
+        all_blocks.sort_unstable_by(|a,b| a.block.time_stamp.cmp(&b.block.time_stamp));
+        all_vidf.sort_unstable_by(|a,b| a.1.cmp(&b.1));
+        all_audf.sort_unstable_by(|a,b| a.1.cmp(&b.1));
 
-        Some(reader)
+        Some(Self {
+            chunk_files: ds, core_blocks,
+            all_blocks, all_vidf, all_audf,
+        })
     }
 }
 
-pub trait ReadExact {
-    type ReadError;
-    fn read_exact(&mut self, pos: u64, buf: &mut [u8]) -> Result<(), Self::ReadError>;
-}
-
-#[cfg(feature = "std")]
-impl<R: std::io::Read + std::io::Seek> ReadExact for R {
-    type ReadError = std::io::Error;
-    fn read_exact(&mut self, pos: u64, buf: &mut [u8]) -> Result<(), Self::ReadError> {
-        self.seek(std::io::SeekFrom::Start(pos))?;
-        self.read_exact(buf)
-    }
-}
-
-impl<Reader> MainReader<Reader>
+impl<DataSrc> MainReader<DataSrc>
+where
+    DataSrc: DataSource
 {
     pub fn width(&self) -> Option<u32> {
         blocks::get_u16(&self.core_blocks.rawi?, blocks::RAWI.field_offset("xRes")?).map(|x| x as u32)
@@ -304,15 +338,15 @@ impl<Reader> MainReader<Reader>
         blocks::get_u16(&self.core_blocks.wavi?, blocks::WAVI.field_offset("bitsPerSample")?)
     }
 
-    fn empty() -> Self {
-        Self {
-            chunk_files: vec![],
-            core_blocks: CoreBlocks::default(),
-            all_blocks: Vec::new(),
-            all_vidf: vec![],
-            all_audf: vec![],
-        }
-    }
+    // fn empty() -> Self {
+    //     Self {
+    //         chunk_files: vec![],
+    //         core_blocks: CoreBlocks::default(),
+    //         all_blocks: Vec::new(),
+    //         all_vidf: vec![],
+    //         all_audf: vec![],
+    //     }
+    // }
 
     pub fn print_blocks(&self) {
         for b in self.all_blocks.iter() {
@@ -334,26 +368,19 @@ impl<Reader> MainReader<Reader>
 
     // TODO: better error handling than just returning option
     // returns none if out buffer is not big enough
-    pub fn get_frame_payload<'a>(&mut self, idx: u32, mut out: &'a mut [u8]) -> Option<&'a [u8]>
-    where
-        Reader: ReadExact
-    {
+    pub fn get_frame_payload<'a>(&mut self, idx: u32, mut out: &'a mut [u8]) -> Option<&'a [u8]> {
         let (file_location, frame_data_size) = self.frame_data_location_and_size(idx)?;
         if out.len() < frame_data_size as usize {
             return None // output buffer too small
         } else {
-            let file = &mut self.chunk_files[file_location.chunk() as usize].0;
             out = &mut out[0..frame_data_size as usize];
-            let result = file.read_exact(file_location.offset(), &mut out).ok()?;
+            let result = self.chunk_files.read_exact(file_location.chunk() as u32, file_location.offset(), &mut out).ok()?;
             return Some(out)
         }
     }
 
-    pub fn decode_frame<'a>(&mut self, idx: u32, output: &'a mut [u16]) -> Option<&'a [u16]>
-    where
-        Reader: ReadExact
-    {
-        let (file_location, frame_data_size) = self.frame_data_location_and_size(idx)?;
+    pub fn decode_frame<'a>(&mut self, idx: u32, output: &'a mut [u16]) -> Option<&'a [u16]> {
+        let (_file_location, frame_data_size) = self.frame_data_location_and_size(idx)?;
 
         // TODO: allow passing temporary buffer for frame decode
         let mut data = Vec::with_capacity(frame_data_size as usize);
@@ -375,17 +402,14 @@ impl<Reader> MainReader<Reader>
 
     /* Intended for 16 bit 44.1khz stereo audio mainly. Returns interleaved stereo I think.
      * TODO: make this a flatmappable iterator */
-    pub fn read_audio(&mut self) -> Option<Vec<i16>>
-    where
-        Reader: ReadExact
-    {
+    pub fn read_audio(&mut self) -> Option<Vec<i16>> {
         let mut audio_buffer = vec![];
         let mut chunk_buffer = vec![];
-        for &(location, timstamp, pos, size) in &self.all_audf {
+        for &(location, _timstamp, pos, size) in &self.all_audf {
             chunk_buffer.clear();
             chunk_buffer.reserve(size as usize);
             unsafe { chunk_buffer.set_len(size as usize); }
-            self.chunk_files[location.chunk() as usize].0.read_exact(pos, &mut chunk_buffer).ok()?;
+            self.chunk_files.read_exact(location.chunk() as u32, pos, &mut chunk_buffer).ok()?;
             for chunk in chunk_buffer.as_chunks().0.iter() {
                 audio_buffer.push(i16::from_le_bytes(*chunk))
             }

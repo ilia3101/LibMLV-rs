@@ -3,7 +3,6 @@
 use clap::{Parser, ValueEnum};
 use mlv::codec;
 use rand::Rng;
-use rawler as rawloader;
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -87,7 +86,7 @@ fn check_cr3(path: &str) -> u32 {
     let mut rawfile = RawSource::new(path).unwrap();
     let mut rawfile2 = RawSource::new(path).unwrap();
 
-    let rawloader = RawLoader::new();
+    let rawler = RawLoader::new();
 
     use std::time::Instant;
     let now = Instant::now();
@@ -98,7 +97,7 @@ fn check_cr3(path: &str) -> u32 {
         let cr3decoder = Cr3Decoder::new(
             &mut rawfile,
             Bmff::new(BufReader::new(std::fs::File::open(&path).expect("Coyldnt open file"))).expect("Failed to create bmff thingy"),
-            &rawloader
+            &rawler
         ).expect("Failed to create CR3 decoder");
         num_images = cr3decoder.raw_image_count().expect("Failed to get number of images in CR3 file");
         println!("Number of images in CR3 file: {}", num_images);
@@ -128,7 +127,7 @@ fn run_through_cr3(path: &str, mut callback: impl FnMut(&[u16]) -> Result<(),Box
     let mut rawfile = RawSource::new(path).unwrap();
     let mut rawfile2 = RawSource::new(path).unwrap();
 
-    let rawloader = RawLoader::new();
+    let rawler = RawLoader::new();
 
     use std::time::Instant;
     let now = Instant::now();
@@ -139,7 +138,7 @@ fn run_through_cr3(path: &str, mut callback: impl FnMut(&[u16]) -> Result<(),Box
         let cr3decoder = Cr3Decoder::new(
             &mut rawfile,
             Bmff::new(BufReader::new(std::fs::File::open(&path).expect("Coyldnt open file"))).expect("Failed to create bmff thingy"),
-            &rawloader
+            &rawler
         ).expect("Failed to create CR3 decoder");
         num_images = cr3decoder.raw_image_count().expect("Failed to get number of images in CR3 file");
         println!("Number of images in CR3 file: {}", num_images);
@@ -151,7 +150,7 @@ fn run_through_cr3(path: &str, mut callback: impl FnMut(&[u16]) -> Result<(),Box
     let cr3decoder = Cr3Decoder::new(
         &mut rawfile,
         Bmff::new(BufReader::new(std::fs::File::open(&path).expect("Coyldnt open file"))).expect("Failed to create bmff thingy"),
-        &rawloader
+        &rawler
     ).expect("Failed to create CR3 decoder");
 
     let now = Instant::now();
@@ -322,7 +321,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut num_frames_in_file_1 = 1;
 
-    if let Ok(rl) = rawloader::decode_file(&args.inputs[0]) {
+    if let Ok(rl) = rawler::decode_file(&args.inputs[0]) {
         width = rl.width as u16;
         height = rl.height as u16;
         black_level = {
@@ -455,8 +454,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut frame_count = 0u32;
         for path in args.inputs {
             // println!("")
-            if let Ok(rl) = rawloader::decode_file(path) {
-                if let rawloader::RawImageData::Integer(data) = rl.data {
+            if let Ok(rl) = rawler::decode_file(path) {
+                if let rawler::RawImageData::Integer(data) = rl.data {
                     let mut histogram = vec![0u32; 65536];
                     for &pix in data.iter() {
                         histogram[pix as usize] += 1;

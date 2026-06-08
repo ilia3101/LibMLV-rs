@@ -1,3 +1,4 @@
+#![cfg_attr(rustfmt, rustfmt_skip)]
 macro_rules! time {
     ($name:expr, $block:block) => {{
         let start = std::time::Instant::now();
@@ -59,6 +60,7 @@ pub fn main()
     /* time! {{  */save_bmp(width, height, &data, &mut std::fs::File::create("test.bmp").unwrap()) /* }}; */
 }
 
+#[cfg_attr(rustfmt, rustfmt_skip)]
 fn save_bmp(width: u32, height: u32, data: &[u8], file: &mut impl std::io::Write) {
     let header: [u8; 26] = [0x42,0x4D,0,0,0,0,0,0,0,0,26,0,0,0,12,0,0,0,width.to_le_bytes()[0],
         width.to_le_bytes()[1],height.to_le_bytes()[0],height.to_le_bytes()[1],1,0,24,0];

@@ -124,6 +124,7 @@ mod util_types {
 
 /***************** TOP LEVEL READER IMPLEMENTATION *****************/
 
+#[cfg(feature = "std")]
 use std::{io::BufReader, fs::File, path::Path, fmt::Debug};
 
 #[derive(Clone,Copy,Debug,PartialEq)]
@@ -134,11 +135,41 @@ pub struct BlockEntry {
 }
 
 // TODO: simplify the entry to this maybe...
-// pub const BLOCK_MAX_STORE_SIZE: usize = 58;
-// pub struct BlockEntry {
-//     loc: FileLocation,
-//     data: [u8; BLOCK_MAX_STORE_SIZE],
-// }
+pub const BLOCK_MAX_STORE_SIZE: usize = 58; // 64 minus size of FileLocation tag (6)
+#[derive(Clone,Copy,Debug,PartialEq)]
+#[repr(align(64))]
+pub struct BlockEntry2 {
+    pub loc: FileLocation,
+    pub data: [u8; BLOCK_MAX_STORE_SIZE],
+}
+
+impl BlockEntry2 {
+    pub const fn block_type_bytes(&self) -> [u8; 4] {
+        self.data.as_chunks().0[0]
+    }
+
+    pub const fn block_type(&self) -> BlockTag {
+        BlockTag(self.block_type_bytes())
+    }
+
+    pub const fn is_type(&self, blocktype: &str) -> bool {
+        if blocktype.len() == 4 {
+            let (a,b) = (self.data.as_chunks::<4>().0[0], blocktype.as_bytes().as_chunks::<4>().0[0]);
+            u32::from_le_bytes(a) == u32::from_le_bytes(b)
+        } else {false}
+    }
+
+    pub const fn size(&self) -> u32 {
+        u32::from_le_bytes(self.data.as_chunks().0[1])
+    }
+
+    pub const fn timestamp(&self) -> u64 {
+        match self.is_type("MLVI") {
+            true => 0,
+            _ => u64::from_le_bytes(self.data.as_chunks().0[1])
+        }
+    }
+}
 
 // An MLV file is presented using one of these
 pub trait DataSource {
@@ -149,6 +180,7 @@ pub trait DataSource {
 }
 
 #[cfg(feature = "std")]
+#[derive(Debug)]
 pub struct FileDataSource {
     file_lengths: Vec<u64>,
     file_positions: Vec<u64>,
@@ -191,6 +223,7 @@ pub struct MainReader<DataSource> {
     pub core_blocks: CoreBlocks,
     pub chunk_files: DataSource, /* TODO: maybe don't keep this inside of this object and have it be external!!! */
     pub all_blocks: Vec<BlockEntry>,
+    pub all_blocks2: Vec<BlockEntry2>,
     /** All AUDF blocks (file location of Block, timestamp, data offset, data length) */
     pub all_audf: Vec<(FileLocation, u64, u64, u32)>,
     /** All VIDF blocks (file location of Block, timestamp, data offset, data length) */
@@ -211,6 +244,7 @@ impl MainReader<FileDataSource>
         /* Create empty reader/index object */
         let mut core_blocks = CoreBlocks::default();
         let mut all_blocks = vec![];
+        let mut all_blocks2 = vec![];
         let mut all_vidf = vec![];
         let mut all_audf = vec![];
 
@@ -228,6 +262,17 @@ impl MainReader<FileDataSource>
                         let location = FileLocation::new(chunk_index as u8, block_position).unwrap();
                         all_blocks.push(
                             BlockEntry { block: block_info, location }
+                        );
+                        all_blocks2.push(
+                            BlockEntry2 {
+                                loc: location,
+                                data: {
+                                    let mut data = [0; _];
+                                    let num_bytes = data.len().min(block_bytes.len());
+                                    data[0..num_bytes].copy_from_slice(&block_bytes[0..num_bytes]);
+                                    data
+                                }
+                            }
                         );
                         /* TODO: put this block loading at the end */
                         fn try_into<const N: usize>(out: &mut Option<[u8; N]>, data: Option<&[u8]>) {
@@ -271,20 +316,18 @@ impl MainReader<FileDataSource>
 
         /* Sort by timestamp */
         all_blocks.sort_unstable_by(|a,b| a.block.time_stamp.cmp(&b.block.time_stamp));
+        all_blocks2.sort_unstable_by(|a,b| a.timestamp().cmp(&b.timestamp()));
         all_vidf.sort_unstable_by(|a,b| a.1.cmp(&b.1));
         all_audf.sort_unstable_by(|a,b| a.1.cmp(&b.1));
 
         Some(Self {
             chunk_files: ds, core_blocks,
-            all_blocks, all_vidf, all_audf,
+            all_blocks, all_blocks2, all_vidf, all_audf,
         })
     }
 }
 
-impl<DataSrc> MainReader<DataSrc>
-where
-    DataSrc: DataSource
-{
+impl<DataSrc> MainReader<DataSrc> {
     pub fn width(&self) -> Option<u32> {
         blocks::get_u16(&self.core_blocks.rawi?, blocks::RAWI.field_offset("xRes")?).map(|x| x as u32)
     }
@@ -338,23 +381,13 @@ where
         blocks::get_u16(&self.core_blocks.wavi?, blocks::WAVI.field_offset("bitsPerSample")?)
     }
 
-    // fn empty() -> Self {
-    //     Self {
-    //         chunk_files: vec![],
-    //         core_blocks: CoreBlocks::default(),
-    //         all_blocks: Vec::new(),
-    //         all_vidf: vec![],
-    //         all_audf: vec![],
-    //     }
-    // }
-
     pub fn print_blocks(&self) {
-        for b in self.all_blocks.iter() {
-            if b.block.block_type != "VIDF" && b.block.block_type != "AUDF" {
-                println!("{:?} : {} bytes", b.block.block_type, b.block.block_size);
+        for b in self.all_blocks2.iter() {
+            if b.block_type() != "VIDF" && b.block_type() != "AUDF" {
+                println!("{:?} : {} bytes", b.block_type(), b.size());
             }
         }
-        println!("Total blocks: {}", self.all_blocks.len());
+        println!("Total blocks: {}", self.all_blocks2.len());
     }
 
     pub fn num_frames(&self) -> u32 {
@@ -368,18 +401,24 @@ where
 
     // TODO: better error handling than just returning option
     // returns none if out buffer is not big enough
-    pub fn get_frame_payload<'a>(&mut self, idx: u32, mut out: &'a mut [u8]) -> Option<&'a [u8]> {
+    pub fn get_frame_payload<'a>(&mut self, idx: u32, mut out: &'a mut [u8]) -> Option<&'a [u8]>
+    where
+        DataSrc: DataSource
+    {
         let (file_location, frame_data_size) = self.frame_data_location_and_size(idx)?;
         if out.len() < frame_data_size as usize {
             return None // output buffer too small
         } else {
             out = &mut out[0..frame_data_size as usize];
-            let result = self.chunk_files.read_exact(file_location.chunk() as u32, file_location.offset(), &mut out).ok()?;
+            let _result = self.chunk_files.read_exact(file_location.chunk() as u32, file_location.offset(), &mut out).ok()?;
             return Some(out)
         }
     }
 
-    pub fn decode_frame<'a>(&mut self, idx: u32, output: &'a mut [u16]) -> Option<&'a [u16]> {
+    pub fn decode_frame<'a>(&mut self, idx: u32, output: &'a mut [u16]) -> Option<&'a [u16]>
+    where
+        DataSrc: DataSource
+    {
         let (_file_location, frame_data_size) = self.frame_data_location_and_size(idx)?;
 
         // TODO: allow passing temporary buffer for frame decode
@@ -393,7 +432,7 @@ where
             (14, false) => codec::decode_packed14(&data, output),
             (12, false) => codec::decode_packed12(&data, output),
             (10, false) => codec::decode_packed10(&data, output),
-            (_, true) => {codec::decode_lj92(&data, output);},
+            (_, true) => {codec::decode_lj92(&data, output).expect("Lj92 failed");},
             _ => {}, /* Unsupported format */
         }
 
@@ -402,7 +441,10 @@ where
 
     /* Intended for 16 bit 44.1khz stereo audio mainly. Returns interleaved stereo I think.
      * TODO: make this a flatmappable iterator */
-    pub fn read_audio(&mut self) -> Option<Vec<i16>> {
+    pub fn read_audio(&mut self) -> Option<Vec<i16>>
+    where
+        DataSrc: DataSource
+    {
         let mut audio_buffer = vec![];
         let mut chunk_buffer = vec![];
         for &(location, _timstamp, pos, size) in &self.all_audf {

@@ -1,7 +1,6 @@
 #![cfg_attr(rustfmt, rustfmt_skip)]
 pub mod blocks;
 pub mod codec;
-pub mod lj92;
 pub use util_types::*;
 pub mod block_reader;
 
@@ -365,8 +364,9 @@ impl<DataSrc> MainReader<DataSrc> {
 
     pub fn is_compressed(&self) -> Option<bool> {
         const MLV_VIDEO_CLASS_FLAG_LJ92: u16 = 0x20;
+        const MLV_VIDEO_CLASS_FLAG_JP2K: u16 = 0x200;
         let class = blocks::get_u16(&self.core_blocks.mlvi?, blocks::MLVI.field_offset("videoClass")?);
-        Some(class? & MLV_VIDEO_CLASS_FLAG_LJ92 != 0)
+        Some(class? & (MLV_VIDEO_CLASS_FLAG_LJ92 | MLV_VIDEO_CLASS_FLAG_JP2K) != 0)
     }
 
     pub fn audio_sample_rate(&self) -> Option<u32> {

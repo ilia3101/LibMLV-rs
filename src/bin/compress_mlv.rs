@@ -1,6 +1,4 @@
-// example command cargo run --release --bin compress_mlv --features="raw2mlv-deps,cineform" -- input.mlv output.mlv
-// or for jp2k: cargo run --release --bin compress_mlv --features="raw2mlv-deps,cineform" -- input.mlv output.mlv --codec jp2k-balanced
-// available codecs: cineform, jp2k-balanced (quant 0.008), jp2k-high (quant 0.005), jp2k-visually-lossless (quant 0.0025), jp2k-low (quant 0.012)
+// example command: cargo run --release --bin compress_mlv --features="compress-mlv" -- --codec jp2k-high --output output.MLV --input /path/to/input.MLV
 use clap::{Parser, ValueEnum};
 use mlv::{BlockHeader, block_reader};
 use std::fs::File;

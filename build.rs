@@ -65,7 +65,6 @@ mod build_impl {
         println!("cargo:rustc-link-lib=dylib=c++");
 
         println!("cargo:rerun-if-changed=build.rs");
-        println!("cargo:rerun-if-changed=cpp/CineformSDK/");
     }
 
     #[cfg(feature = "jpeg2000")]
@@ -268,7 +267,6 @@ mod build_impl {
         println!("cargo:rustc-link-lib=dylib=c++");
 
         println!("cargo:rerun-if-changed=build.rs");
-        println!("cargo:rerun-if-changed=cpp/OpenJPH");
     }
 }
 

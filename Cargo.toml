@@ -32,13 +32,14 @@ cc = { version = "1", optional = true }
 name = "mlv"
 
 [features]
-default = ["std", "cineform", "jpeg2000"] # Use of standard library enabled by default
+default = ["std"] # Use of standard library enabled by default
 std = []
 raw2mlv-deps = ["dep:rawler", "dep:clap", "dep:rand", "dep:tqdm"]
 audio-export = ["dep:hound"]
 egui = ["dep:eframe", "dep:rfd"]
 cineform = ["std", "dep:cc"]
 jpeg2000 = ["std", "dep:cc"]
+compress-mlv = ["cineform", "jpeg2000", "dep:clap", "dep:tqdm"]
 
 [[bin]]
 name = "raw2mlv"
@@ -54,7 +55,7 @@ required-features = ["raw2mlv-deps"]
 
 [[bin]]
 name = "compress_mlv"
-required-features = ["raw2mlv-deps", "cineform"]
+required-features = ["compress-mlv"]
 
 [[bin]]
 name = "extract_audio"

@@ -283,10 +283,10 @@ fn redecode(data: &[u16], width: u32, height: u32) -> Vec<u16> {
     // let (encode, decode) = (encode_log_14_to_12, decode_log_12_to_14);
     let (encode, decode) = (|x| log_encode_int(x, 1024, 16383), |x| log_decode_int(x, 1024, 16383));
     let data = data.iter().copied().map(encode).collect::<Vec<_>>();
-    let encoded = cineform_sys::Encoder::new(width as u32, height as u32, cineform_sys::sys::CFHD_ENCODING_QUALITY_FILMSCAN3).unwrap().encode(&data).unwrap();
+    let encoded = codec::cineform::Encoder::new(width as u32, height as u32, codec::cineform_sys::CFHD_ENCODING_QUALITY_FILMSCAN3).unwrap().encode(&data).unwrap();
     let cratio = (data.len() * 14) as f64 / (encoded.len() * 8) as f64;
     println!("Compression: {:.2?}", cratio);
-    return cineform_sys::Decoder::new().unwrap().decode(&encoded, width, height).unwrap().0.iter().copied().map(decode).collect::<Vec<_>>();
+    return codec::cineform::Decoder::new().unwrap().decode(&encoded, width, height).unwrap().0.iter().copied().map(decode).collect::<Vec<_>>();
     // return data.to_vec()
 }
 
@@ -305,7 +305,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Args = {:#?}", args);
 
     #[cfg(feature = "cineform")]
-    let quality = cineform_sys::sys::CFHD_ENCODING_QUALITY_FILMSCAN1;
+    let quality = codec::cineform_sys::CFHD_ENCODING_QUALITY_FILMSCAN1;
 
     let mut camera_model_name = "Canon EOS 5D Mark II".to_string();
     let mut camera_model_id = 123u32;
@@ -427,7 +427,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let data = data.to_vec();
 
             if args.codec == Codec::Jp2k {
-                let mut enc = bayer_compression::jp2kht::BayerEncoder::new();
+                let mut enc = codec::jpeg2000::BayerEncoder::new();
                 let mut jp2k_buf = vec![0u8; data.len() * 2];
                 let size = enc.encode_bayer(width as u32, height as u32, 14, &data, &mut jp2k_buf, 0.008);
                 jp2k_buf.truncate(size);
@@ -442,7 +442,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 } else {
                     #[cfg(feature = "cineform")]
                     {
-                        if let Ok(e) = cineform_sys::Encoder::new(width as u32, height as u32, quality) {
+                        if let Ok(e) = codec::cineform::Encoder::new(width as u32, height as u32, quality) {
                             if let Ok(encoded) = e.encode(&data) {
                                 buf = encoded;
                             }
@@ -490,7 +490,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let data = data.to_vec();
 
                     if args.codec == Codec::Jp2k {
-                        let mut enc = bayer_compression::jp2kht::BayerEncoder::new();
+                        let mut enc = codec::jpeg2000::BayerEncoder::new();
                         let mut jp2k_buf = vec![0u8; data.len() * 2];
                         let size = enc.encode_bayer(width as u32, height as u32, 14, &data, &mut jp2k_buf, 0.008);
                         jp2k_buf.truncate(size);
@@ -505,7 +505,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         } else {
                             #[cfg(feature = "cineform")]
                             {
-                                if let Ok(e) = cineform_sys::Encoder::new(width as u32, height as u32, quality) {
+                                if let Ok(e) = codec::cineform::Encoder::new(width as u32, height as u32, quality) {
                                     if let Ok(encoded) = e.encode(&data) {
                                         buf = encoded;
                                     }

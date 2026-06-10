@@ -286,7 +286,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("bl = {}", bl);
 
-    let mut jp2k_encoder = if codec.is_jp2k() { Some(bayer_compression::jp2kht::BayerEncoder::new()) } else { None };
+    let mut jp2k_encoder = if codec.is_jp2k() { Some(mlv::codec::jpeg2000::BayerEncoder::new()) } else { None };
 
     for i in tqdm::tqdm(0..reader.num_frames()) {
         reader.decode_frame(i, &mut frame_buf);
@@ -311,10 +311,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             buf = jp2k_buf;
         } else {
             // cineforms "highest quality" FLIMSCAN3 is too compressed and does a bad job for that compression level, Jp2K is much cleaner
-            if let Ok(e) = bayer_compression::Encoder::new(
+            if let Ok(e) = mlv::codec::cineform::Encoder::new(
                 reader.width().unwrap() as u32,
                 reader.height().unwrap() as u32,
-                bayer_compression::cineform_sys::CFHD_ENCODING_QUALITY_FILMSCAN3,
+                mlv::codec::cineform_sys::CFHD_ENCODING_QUALITY_FILMSCAN3,
             ) {
                 if let Ok(encoded) = e.encode(&logged) {
                     buf = encoded;

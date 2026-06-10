@@ -1,0 +1,26 @@
+max_width = 120
+use_small_heuristics = "Max"
+version = "Two"
+
+# The following two attributes allow one-liner functions how I like!
+# Ref:
+#   https://rust-lang.github.io/rustfmt/?version=v1.8.0&search=#inline_attribute_width
+#   https://rust-lang.github.io/rustfmt/?version=v1.8.0&search=#fn_single_line
+inline_attribute_width = 120
+fn_single_line = true
+
+# Allow more single lining
+single_line_if_else_max_width = 120
+single_line_let_else_max_width = 120
+struct_lit_width = 60
+struct_variant_width = 60
+short_array_element_width_threshold = 35
+
+# Automatically shorthand init (if variables match struct names)
+use_field_init_shorthand = true
+
+
+# import reordering (same as default, except group_imports which I changed)
+reorder_imports=true
+group_imports="StdExternalCrate"
+reorder_modules=true

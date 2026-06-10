@@ -63,6 +63,8 @@ mod build_impl {
 
         println!("cargo:rustc-link-lib=pthread");
         println!("cargo:rustc-link-lib=dylib=c++");
+        #[cfg(target_os = "linux")]
+        println!("cargo:rustc-link-lib=uuid");
 
         println!("cargo:rerun-if-changed=build.rs");
     }
@@ -77,9 +79,8 @@ mod build_impl {
         let others_dir = core.join("others");
         let openjph_dir = core.join("openjph");
 
-        let is_x86 = std::env::var("TARGET").map_or(false, |t| {
-            t.contains("x86_64") || t.contains("i686") || t.contains("i386")
-        });
+        let is_x86 =
+            std::env::var("TARGET").map_or(false, |t| t.contains("x86_64") || t.contains("i686") || t.contains("i386"));
 
         // ── Base C++ sources (no SIMD variants) ──
         let mut base_build = cc::Build::new();
@@ -127,12 +128,7 @@ mod build_impl {
 
         // ── C file (ojph_mem_c.c) ──
         let mut c_build = cc::Build::new();
-        c_build
-            .include(&openjph_dir)
-            .flag("-fPIC")
-            .opt_level(3)
-            .warnings(false)
-            .file(others_dir.join("ojph_mem_c.c"));
+        c_build.include(&openjph_dir).flag("-fPIC").opt_level(3).warnings(false).file(others_dir.join("ojph_mem_c.c"));
         c_build.compile("openjph_c");
 
         // ── SIMD sources (x86 or ARM via sse2neon) ──
@@ -176,8 +172,7 @@ mod build_impl {
                 .file(codestream_dir.join("ojph_codestream_sse2.cpp"))
                 .file(transform_dir.join("ojph_colour_sse2.cpp"));
             if is_x86 {
-                b.flag("-msse2")
-                    .file(transform_dir.join("ojph_transform_sse2.cpp"));
+                b.flag("-msse2").file(transform_dir.join("ojph_transform_sse2.cpp"));
             } else {
                 b.include(&sse2neon_dir).define("OJPH_ARCH_X86_64", "1");
             }

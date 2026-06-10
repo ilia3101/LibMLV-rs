@@ -47,9 +47,9 @@ impl CompressionCodec {
         match self {
             CompressionCodec::CineForm => 0.0,
             CompressionCodec::Jp2kLow => 0.01,                // Visible artifacts
-            CompressionCodec::Jp2kBalanced => 0.0065,         // 5K+ with no intention of croppinZ
-            CompressionCodec::Jp2kHigh => 0.0045,             // good for 3k+ only
-            CompressionCodec::Jp2kVeryHigh => 0.0032,         // good for 1080
+            CompressionCodec::Jp2kBalanced => 0.0065, // Good for 5K+ resolution if you have no intention of cropping
+            CompressionCodec::Jp2kHigh => 0.0045,     // good for 3k+ only
+            CompressionCodec::Jp2kVeryHigh => 0.0032, // good for 1080
             CompressionCodec::Jp2kVisuallyLossless => 0.0015, // (go up one quality level if you're a perfectionist. TODO: decide on rules)
         }
     }

@@ -1,105 +1,124 @@
 // example command cargo run --release --bin compress_mlv --features="raw2mlv-deps,cineform" -- input.mlv output.mlv
+// or for jp2k: cargo run --release --bin compress_mlv --features="raw2mlv-deps,cineform" -- input.mlv output.mlv --codec jp2k-balanced
+// available codecs: cineform, jp2k-balanced (quant 0.008), jp2k-high (quant 0.005), jp2k-visually-lossless (quant 0.0025), jp2k-low (quant 0.012)
+use clap::{Parser, ValueEnum};
 use mlv::{BlockHeader, block_reader};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
-use std::{env, vec};
 
-use crate::rng::XORShiftPRNG;
+#[derive(Parser, Debug)]
+#[command(about, long_about = None)]
+struct Args {
+    /** Input MLV file */
+    #[arg(long, short)]
+    input: String,
 
-mod rng {
-    use core::num::Wrapping;
+    /** Output MLV file */
+    #[arg(long, short)]
+    output: String,
 
-    /* Uses xorshift* algorithm */
-    #[derive(Clone, Copy, Debug)]
-    #[repr(transparent)]
-    pub struct XORShiftPRNG(pub Wrapping<u64>);
+    /** Compression codec (default: jp2k-high) - I recommend jp2k-high for 3K+ video and jp2k-very-high for 1080p. If you have 5k+ and don't intend to crop, jp2k-medium might be good enough. */
+    #[arg(long, value_enum, default_value_t = CompressionCodec::Jp2kHigh)]
+    codec: CompressionCodec,
 
-    impl XORShiftPRNG {
-        #[inline]
-        pub fn new(seed: u64) -> Self {
-            Self(Wrapping(seed))
+    /** Enabled by default, as vertical stripes can interfere with compression in an ugly way and become uncorrectable. */
+    #[arg(long, default_value_t = true)]
+    fix_vertical_stripes: bool,
+}
+
+#[derive(ValueEnum, Clone, Copy, PartialEq, Eq, Debug)]
+enum CompressionCodec {
+    #[value(name = "cineform")]
+    CineForm,
+    #[value(name = "jp2k-low")]
+    Jp2kLow,
+    #[value(name = "jp2k-medium")]
+    Jp2kBalanced,
+    #[value(name = "jp2k-high")]
+    Jp2kHigh,
+    #[value(name = "jp2k-very-high")]
+    Jp2kVeryHigh,
+    #[value(name = "jp2k-visually-lossless")]
+    Jp2kVisuallyLossless,
+}
+
+impl CompressionCodec {
+    fn quant(&self) -> f64 {
+        match self {
+            CompressionCodec::CineForm => 0.0,
+            CompressionCodec::Jp2kLow => 0.01,                // Visible artifacts
+            CompressionCodec::Jp2kBalanced => 0.0065,         // 5K+ with no intention of croppinZ
+            CompressionCodec::Jp2kHigh => 0.0045,             // good for 3k+ only
+            CompressionCodec::Jp2kVeryHigh => 0.0032,         // good for 1080
+            CompressionCodec::Jp2kVisuallyLossless => 0.0015, // (go up one quality level if you're a perfectionist. TODO: decide on rules)
         }
+    }
 
-        #[inline(always)]
-        pub fn get(&mut self) -> u64 {
-            self.0 ^= self.0 >> 12;
-            self.0 ^= self.0 << 25;
-            self.0 ^= self.0 >> 27;
-            (self.0 * Wrapping(0x2545F4914F6CDD1D)).0
-        }
-
-        #[inline(always)]
-        pub fn get_u64(&mut self, up_to: u64) -> u64 {
-            let lz = up_to.leading_zeros();
-            let mut value = self.get() >> lz;
-            while value >= up_to {
-                value = self.get() >> lz;
-            }
-            value
-        }
-
-        #[inline(always)]
-        pub fn get_usize(&mut self, up_to: usize) -> usize {
-            self.get_u64(up_to as u64) as usize
-        }
+    fn is_jp2k(&self) -> bool {
+        !matches!(self, CompressionCodec::CineForm)
     }
 }
 
-fn log1(x: f64, stops_range: f64) -> f64 {
-    (x.log2() - 1.0) / (1.0f64.log2() - (2.0f64.powf(-stops_range).log2())) + 1.0
-}
+// Some crap I came up with using desmos - this needs more consideration to improve compression and stop wasting so many code values on dark/noisy images as it currently is
+mod log {
+    fn log1(x: f64, stops_range: f64) -> f64 {
+        (x.log2() - 1.0) / (1.0f64.log2() - (2.0f64.powf(-stops_range).log2())) + 1.0
+    }
 
-fn log1_gradient(x: f64, stops_range: f64) -> f64 {
-    1.0 / (x * stops_range * core::f64::consts::LN_2)
-}
+    fn log1_gradient(x: f64, stops_range: f64) -> f64 {
+        1.0 / (x * stops_range * core::f64::consts::LN_2)
+    }
 
-fn logwithlin(x: f64, thresh: f64, stops_range: f64) -> f64 {
-    if x < thresh {
-        log1_gradient(thresh, stops_range) * (x - thresh) + log1(thresh, stops_range)
-    } else {
-        log1(x, stops_range)
+    fn logwithlin(x: f64, thresh: f64, stops_range: f64) -> f64 {
+        if x < thresh {
+            log1_gradient(thresh, stops_range) * (x - thresh) + log1(thresh, stops_range)
+        } else {
+            log1(x, stops_range)
+        }
+    }
+
+    /// Inverse of `withlin`. Given y = withlin(x, thresh, stops_range), returns x.
+    pub fn logwithlin_inverse(y: f64, thresh: f64, stops_range: f64) -> f64 {
+        // Precompute the threshold value in output space and the linear slope
+        let y_thresh = log1(thresh, stops_range);
+        let m = log1_gradient(thresh, stops_range);
+
+        // Guard against division by zero (shouldn't occur with valid inputs)
+        if m == 0.0 {
+            return thresh;
+        }
+
+        if y >= y_thresh {
+            // Invert the log branch
+            2.0_f64.powf((y - 1.0) * stops_range + 1.0)
+        } else {
+            // Invert the linear branch
+            thresh + (y - y_thresh) / m
+        }
+    }
+
+    const LOG_THRESH: f64 = 0.0061;
+    const LOG_STOPS: f64 = 9.72;
+    const LOG_MAX_RANGE: f64 = 0.99249;
+
+    fn log_encode(x: f64) -> f64 {
+        logwithlin(x, LOG_THRESH, LOG_STOPS)
+    }
+
+    pub fn log_encode_int(x: u16, bl: u16, max: u16) -> u16 {
+        let as_float = (((x as f32 - bl as f32) as f32) / ((max - bl) as f32)).min(1.0);
+        let as_log = log_encode(as_float as f64) * (65535.0 * LOG_MAX_RANGE);
+        return (as_log + 0.5) as u16;
+    }
+
+    pub fn log_decode_int(x: u16, bl: u16, max: u16) -> u16 {
+        let as_float = logwithlin_inverse(x as f64 / (65535.0 * LOG_MAX_RANGE), LOG_THRESH, LOG_STOPS);
+        let in_range = as_float * (max - bl) as f64 + bl as f64;
+        return (in_range + 0.5) as u16;
     }
 }
 
-/// Inverse of `withlin`. Given y = withlin(x, thresh, stops_range), returns x.
-pub fn logwithlin_inverse(y: f64, thresh: f64, stops_range: f64) -> f64 {
-    // Precompute the threshold value in output space and the linear slope
-    let y_thresh = log1(thresh, stops_range);
-    let m = log1_gradient(thresh, stops_range);
-
-    // Guard against division by zero (shouldn't occur with valid inputs)
-    if m == 0.0 {
-        return thresh;
-    }
-
-    if y >= y_thresh {
-        // Invert the log branch
-        2.0_f64.powf((y - 1.0) * stops_range + 1.0)
-    } else {
-        // Invert the linear branch
-        thresh + (y - y_thresh) / m
-    }
-}
-
-const LOG_THRESH: f64 = 0.0061;
-const LOG_STOPS: f64 = 9.72;
-const LOG_MAX_RANGE: f64 = 0.99249;
-
-fn log_encode(x: f64) -> f64 {
-    logwithlin(x, LOG_THRESH, LOG_STOPS)
-}
-
-fn log_encode_int(x: u16, bl: u16, max: u16) -> u16 {
-    let as_float = (((x as f32 - bl as f32) as f32) / ((max - bl) as f32)).min(1.0);
-    let as_log = log_encode(as_float as f64) * (65535.0 * LOG_MAX_RANGE);
-    return (as_log + 0.5) as u16;
-}
-
-fn log_decode_int(x: u16, bl: u16, max: u16) -> u16 {
-    let as_float = logwithlin_inverse(x as f64 / (65535.0 * LOG_MAX_RANGE), LOG_THRESH, LOG_STOPS);
-    let in_range = as_float * (max - bl) as f64 + bl as f64;
-    return (in_range + 0.5) as u16;
-}
+use log::*;
 
 // TODO: adapt to bayer pattern.
 fn get_vertical_stripes_coeffs(data: &[u16], width: usize, bl: u16) -> [f32; 8] {
@@ -163,8 +182,8 @@ fn get_vertical_stripes_coeffs(data: &[u16], width: usize, bl: u16) -> [f32; 8] 
 
     // find median of each columns histogram bin position
     let sums = diff_hists.map(|hist| hist.iter().sum::<u32>());
-    println!("diff_hists: {:?}", diff_hists);
-    println!("sums: {:?}", sums);
+    // println!("diff_hists: {:?}", diff_hists);
+    // println!("sums: {:?}", sums);
     let median_bin_positions = diff_hists.iter().zip(sums.iter()).map(|(hist, hist_sum)| {
         let (mut bin, mut sum) = (0, 0);
         for (bin, value) in hist.iter().enumerate() {
@@ -194,16 +213,15 @@ fn apply_vertical_stripe_coeffs(data: &mut [u16], width: usize, bl: u16, coeffs:
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 3 {
-        eprintln!("Usage: {} <input.mlv> <output.mlv>", args[0]);
-        std::process::exit(1);
-    }
-    let input_path = &args[1];
-    let output_path = &args[2];
+    let args = Args::parse();
 
-    let file_name = &std::env::args().collect::<Vec<_>>()[1];
-    println!("{file_name}");
+    let input_path = &args.input;
+    let output_path = &args.output;
+
+    let codec = args.codec;
+    println!("Codec: {:?} (quant: {})", codec, codec.quant());
+
+    println!("{}", args.input);
 
     let mut reader = mlv::MainReader::open_mlv(input_path, None).expect("Couldn't open MLV");
     let bl = reader.black_level().unwrap();
@@ -219,7 +237,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             input_file.seek(SeekFrom::Start(block.loc.offset())).unwrap();
             let mut block_buf = vec![0; block.size() as usize];
             input_file.read_exact(&mut block_buf).unwrap();
-            block_buf[32] = 0x11; // set raw AND cineform video class
+            let video_class: u16 = if codec.is_jp2k() { 0x201 } else { 0x11 };
+            block_buf[32..34].copy_from_slice(&u16::to_le_bytes(video_class));
             output_file.write_all(&block_buf).unwrap();
             break;
         }
@@ -245,7 +264,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let linearise_lut_bytes = lut_decode.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<_>>();
     output_file.write_all(&linearise_lut_bytes)?;
 
-    // wqrite all audio AUDF
+    // write all audio AUDF
     for block in &reader.all_blocks2 {
         if block.is_type("AUDF") {
             input_file.seek(SeekFrom::Start(block.loc.offset())).unwrap();
@@ -255,43 +274,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // // Write all VIDF. TODO: add compression
-    // for block in &reader.all_blocks2 {
-    //     if block.is_type("VIDF") {
-    //         input_file.seek(SeekFrom::Start(block.loc.offset())).unwrap();
-    //         let mut block_buf = vec![0; block.size() as usize];
-    //         input_file.read_exact(&mut block_buf).unwrap();
-    //         output_file.write_all(&block_buf).unwrap();
-    //     }
-    // }
-
     let mut frame_buf = vec![0; (reader.width().unwrap() * reader.height().unwrap()) as usize];
 
     // get vertical stripe coeffs
-    reader.decode_frame(0, &mut frame_buf);
-    let vscoeffs = get_vertical_stripes_coeffs(&frame_buf, reader.width().unwrap() as usize, bl as u16);
+    let mut vscoeffs = [1.0; 8];
+    if args.fix_vertical_stripes {
+        reader.decode_frame(0, &mut frame_buf);
+        let vscoeffs = get_vertical_stripes_coeffs(&frame_buf, reader.width().unwrap() as usize, bl as u16);
+        println!("Vertical stripe multipliers = {:.4?}", vscoeffs);
+    }
 
     println!("bl = {}", bl);
 
-    println!("Coeffs = {:.4?}", vscoeffs);
+    let mut jp2k_encoder = if codec.is_jp2k() { Some(bayer_compression::jp2kht::BayerEncoder::new()) } else { None };
 
     for i in tqdm::tqdm(0..reader.num_frames()) {
         reader.decode_frame(i, &mut frame_buf);
-        apply_vertical_stripe_coeffs(&mut frame_buf, reader.width().unwrap() as usize, bl as u16, vscoeffs);
+
+        if args.fix_vertical_stripes {
+            apply_vertical_stripe_coeffs(&mut frame_buf, reader.width().unwrap() as usize, bl as u16, vscoeffs);
+        }
 
         let mut buf = vec![];
         let mut logged = frame_buf.iter().copied().map(|x| lut_encode[x as usize]).collect::<Vec<_>>();
-        // Add grain so cineform doesn't ruin smooth areas like sky (it make faint clouds go very artifacty and gross)
-        // let mut rng = rng::XORShiftPRNG::new(69);
-        // for pix in logged.iter_mut() {
-        //     *pix = (*pix as i32 - 32 + rng.get_u64(64) as i32) as u16;
-        // }
-        #[cfg(feature = "cineform")]
-        {
-            if let Ok(e) = cineform_sys::Encoder::new(
+        if codec.is_jp2k() {
+            let mut jp2k_buf = vec![0u8; (reader.width().unwrap() as usize * reader.height().unwrap() as usize * 4)];
+            let size = jp2k_encoder.as_mut().unwrap().encode_bayer(
                 reader.width().unwrap() as u32,
                 reader.height().unwrap() as u32,
-                cineform_sys::sys::CFHD_ENCODING_QUALITY_FILMSCAN3,
+                16,
+                &logged,
+                &mut jp2k_buf,
+                codec.quant() as f32,
+            );
+            jp2k_buf.truncate(size);
+            buf = jp2k_buf;
+        } else {
+            // cineforms "highest quality" FLIMSCAN3 is too compressed and does a bad job for that compression level, Jp2K is much cleaner
+            if let Ok(e) = bayer_compression::Encoder::new(
+                reader.width().unwrap() as u32,
+                reader.height().unwrap() as u32,
+                bayer_compression::cineform_sys::CFHD_ENCODING_QUALITY_FILMSCAN3,
             ) {
                 if let Ok(encoded) = e.encode(&logged) {
                     buf = encoded;
@@ -314,18 +337,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output_size = std::fs::metadata(output_path)?.len() as f64;
     println!("Done! Wrote sorted MLV to {output_path}");
     println!(
-        "Compression ratio: {:.1}:1 ({:.1} MB -> {:.1} MB)",
+        "File size reduction: {:.1}:1 ({:.1} MB -> {:.1} MB)",
         input_size / output_size,
         input_size / 1_000_000.0,
         output_size / 1_000_000.0
     );
     // include average block size
-    let lossless_size = reader.all_blocks2.len() as u64 * 32
-        + (reader.width().unwrap() as u64 * reader.height().unwrap() as u64 * 12 * reader.num_frames() as u64) / 8;
+    let bidepth = 14;
+    let uncomp_size = reader.all_blocks2.len() as u64 * 32
+        + (reader.width().unwrap() as u64 * reader.height().unwrap() as u64 * bidepth * reader.num_frames() as u64) / 8;
     println!(
-        "Compression ratio compared to lossless: {:.1}:1 ({:.1} MB -> {:.1} MB)",
-        lossless_size as f64 / output_size,
-        lossless_size as f64 / 1_000_000.0,
+        "Compression ratio compared to uncompressed: {:.1}x ({:.1} MB -> {:.1} MB)",
+        uncomp_size as f64 / output_size,
+        uncomp_size as f64 / 1_000_000.0,
         output_size / 1_000_000.0
     );
 

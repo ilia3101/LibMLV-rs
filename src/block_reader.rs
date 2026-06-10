@@ -1,5 +1,3 @@
-use crate::BlockHeader;
-
 #[derive(Debug, Copy, Clone)]
 pub enum ReadBlocksError<ReadErrorType> {
     BlockCutoff,

@@ -24,6 +24,8 @@ enum Codec {
     Lj92,
     #[value(name = "cineform")]
     Cineform,
+    #[value(name = "jp2k")]
+    Jp2k,
 }
 
 /// Simple program to greet a person
@@ -357,6 +359,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     writer.write_all(&u32::to_le_bytes(0))?;
     let videoclass = match args.codec {
         Codec::Cineform => 0x11,
+        Codec::Jp2k => 0x201,
         Codec::Lj92 => 0x21,
         _ => 0x01,
     };
@@ -422,18 +425,27 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             // CINEFORM TEST
             let data = data.to_vec();
-            #[cfg(feature = "cineform")]
-            let data = redecode(&data, width as u32, height as u32);
 
-            if args.codec != Codec::Cineform {
-                buf = vec![0; frame_size_bytes as usize];
-                mlv::codec::encode_packed14(&data, &mut buf);
+            if args.codec == Codec::Jp2k {
+                let mut enc = bayer_compression::jp2kht::BayerEncoder::new();
+                let mut jp2k_buf = vec![0u8; data.len() * 2];
+                let size = enc.encode_bayer(width as u32, height as u32, 14, &data, &mut jp2k_buf, 0.008);
+                jp2k_buf.truncate(size);
+                buf = jp2k_buf;
             } else {
                 #[cfg(feature = "cineform")]
-                {
-                    if let Ok(e) = cineform_sys::Encoder::new(width as u32, height as u32, quality) {
-                        if let Ok(encoded) = e.encode(&data) {
-                            buf = encoded;
+                let data = redecode(&data, width as u32, height as u32);
+
+                if args.codec != Codec::Cineform {
+                    buf = vec![0; frame_size_bytes as usize];
+                    mlv::codec::encode_packed14(&data, &mut buf);
+                } else {
+                    #[cfg(feature = "cineform")]
+                    {
+                        if let Ok(e) = cineform_sys::Encoder::new(width as u32, height as u32, quality) {
+                            if let Ok(encoded) = e.encode(&data) {
+                                buf = encoded;
+                            }
                         }
                     }
                 }
@@ -476,18 +488,27 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                     // CINEFORM TEST
                     let data = data.to_vec();
-                    #[cfg(feature = "cineform")]
-                    let data = redecode(&data, width as u32, height as u32);
 
-                    if args.codec != Codec::Cineform {
-                        buf = vec![0; frame_size_bytes as usize];
-                        mlv::codec::encode_packed14(&data, &mut buf);
+                    if args.codec == Codec::Jp2k {
+                        let mut enc = bayer_compression::jp2kht::BayerEncoder::new();
+                        let mut jp2k_buf = vec![0u8; data.len() * 2];
+                        let size = enc.encode_bayer(width as u32, height as u32, 14, &data, &mut jp2k_buf, 0.008);
+                        jp2k_buf.truncate(size);
+                        buf = jp2k_buf;
                     } else {
                         #[cfg(feature = "cineform")]
-                        {
-                            if let Ok(e) = cineform_sys::Encoder::new(width as u32, height as u32, quality) {
-                                if let Ok(encoded) = e.encode(&data) {
-                                    buf = encoded;
+                        let data = redecode(&data, width as u32, height as u32);
+
+                        if args.codec != Codec::Cineform {
+                            buf = vec![0; frame_size_bytes as usize];
+                            mlv::codec::encode_packed14(&data, &mut buf);
+                        } else {
+                            #[cfg(feature = "cineform")]
+                            {
+                                if let Ok(e) = cineform_sys::Encoder::new(width as u32, height as u32, quality) {
+                                    if let Ok(encoded) = e.encode(&data) {
+                                        buf = encoded;
+                                    }
                                 }
                             }
                         }

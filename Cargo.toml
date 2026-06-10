@@ -20,7 +20,7 @@ hound = { version = "3", optional = true }
 argparse = { version = "0.2.2", optional = true }
 clap = { version = "4.6.1", features = ["derive"], optional = true }
 rand = { version = "0.8", optional = true }
-cineform-sys = { path = "../cineform-rs", optional = true }
+bayer-compression = { path = "../bayer-compression", optional = true }
 eframe = { version = "0.29", optional = true }
 rfd = { version = "0.15", optional = true }
 tqdm = { version = "0.8.0", optional = true }
@@ -30,12 +30,14 @@ tqdm = { version = "0.8.0", optional = true }
 name = "mlv"
 
 [features]
-default = ["std"] # Use of standard library enabled by default
+default = ["std", "cineform", "jpeg2000"] # Use of standard library enabled by default
 std = []
 raw2mlv-deps = ["dep:rawler", "dep:clap", "dep:rand", "dep:tqdm"]
 audio-export = ["dep:hound"]
-cineform = ["dep:cineform-sys"]
+bayer-compression = ["dep:bayer-compression"]
 egui = ["dep:eframe", "dep:rfd"]
+cineform = ["std"]
+jpeg2000 = ["std"]
 
 [[bin]]
 name = "raw2mlv"
@@ -51,7 +53,7 @@ required-features = ["raw2mlv-deps"]
 
 [[bin]]
 name = "compress_mlv"
-required-features = ["raw2mlv-deps"]
+required-features = ["raw2mlv-deps", "bayer-compression"]
 
 [[bin]]
 name = "extract_audio"

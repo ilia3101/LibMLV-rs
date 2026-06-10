@@ -285,6 +285,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("bl = {}", bl);
 
     let mut jp2k_encoder = if codec.is_jp2k() { Some(mlv::codec::jpeg2000::BayerEncoder::new()) } else { None };
+    let mut encoded_sizes_sum = 0;
 
     for i in tqdm::tqdm(0..reader.num_frames()) {
         reader.decode_frame(i, &mut frame_buf);
@@ -320,6 +321,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
+        encoded_sizes_sum += buf.len();
+
         // write it now...
         output_file.write_all("VIDF".as_bytes())?;
         output_file.write_all(&(32u32 + buf.len() as u32).to_le_bytes())?;
@@ -346,7 +349,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         + (reader.width().unwrap() as u64 * reader.height().unwrap() as u64 * bidepth * reader.num_frames() as u64) / 8;
     println!(
         "Compression ratio compared to uncompressed: {:.1}x ({:.1} MB -> {:.1} MB)",
-        uncomp_size as f64 / output_size,
+        uncomp_size as f64 / encoded_sizes_sum as f64,
         uncomp_size as f64 / 1_000_000.0,
         output_size / 1_000_000.0
     );

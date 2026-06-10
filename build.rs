@@ -1,7 +1,43 @@
 #[cfg(any(feature = "cineform", feature = "jpeg2000"))]
 mod build_impl {
     use std::fs;
+    use std::io;
     use std::path::Path;
+
+    fn extract_zip(zip_path: &Path, out_dir: &Path) {
+        if out_dir.exists() {
+            return;
+        }
+        let file = fs::File::open(zip_path)
+            .unwrap_or_else(|e| panic!("Failed to open {}: {}", zip_path.display(), e));
+        let mut archive = zip::ZipArchive::new(file)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {}", zip_path.display(), e));
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i).unwrap();
+            let name = entry.name().to_string();
+            let out_path = out_dir.join(&name);
+            if entry.is_dir() {
+                fs::create_dir_all(&out_path).unwrap();
+            } else {
+                if let Some(parent) = out_path.parent() {
+                    fs::create_dir_all(parent).unwrap();
+                }
+                let mut outfile = fs::File::create(&out_path).unwrap();
+                io::copy(&mut entry, &mut outfile).unwrap();
+            }
+        }
+        println!("cargo:warning=Extracted {} into {}", zip_path.display(), out_dir.display());
+    }
+
+    #[cfg(feature = "jpeg2000")]
+    pub fn extract_openjph() {
+        extract_zip(Path::new("cpp/OpenJPH.zip"), Path::new("cpp/OpenJPH"));
+    }
+
+    #[cfg(feature = "cineform")]
+    pub fn extract_cineform() {
+        extract_zip(Path::new("cpp/CineformSDK.zip"), Path::new("cpp/CineformSDK"));
+    }
 
     fn add_files(build: &mut cc::Build, dir: &Path, ext: &str) {
         for entry in fs::read_dir(dir).unwrap() {
@@ -266,6 +302,11 @@ mod build_impl {
 }
 
 fn main() {
+    #[cfg(feature = "cineform")]
+    build_impl::extract_cineform();
+    #[cfg(feature = "jpeg2000")]
+    build_impl::extract_openjph();
+
     #[cfg(feature = "cineform")]
     build_impl::compile_cineform();
     #[cfg(feature = "jpeg2000")]

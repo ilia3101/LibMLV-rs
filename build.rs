@@ -1,4 +1,4 @@
-#[cfg(any(feature = "cineform", feature = "jpeg2000"))]
+#[cfg(any(feature = "jpeg2000"))]
 mod build_impl {
     use std::fs;
     use std::io;
@@ -8,10 +8,9 @@ mod build_impl {
         if out_dir.exists() {
             return;
         }
-        let file = fs::File::open(zip_path)
-            .unwrap_or_else(|e| panic!("Failed to open {}: {}", zip_path.display(), e));
-        let mut archive = zip::ZipArchive::new(file)
-            .unwrap_or_else(|e| panic!("Failed to read {}: {}", zip_path.display(), e));
+        let file = fs::File::open(zip_path).unwrap_or_else(|e| panic!("Failed to open {}: {}", zip_path.display(), e));
+        let mut archive =
+            zip::ZipArchive::new(file).unwrap_or_else(|e| panic!("Failed to read {}: {}", zip_path.display(), e));
         for i in 0..archive.len() {
             let mut entry = archive.by_index(i).unwrap();
             let name = entry.name().to_string();
@@ -34,11 +33,6 @@ mod build_impl {
         extract_zip(Path::new("cpp/OpenJPH.zip"), Path::new("cpp/OpenJPH"));
     }
 
-    #[cfg(feature = "cineform")]
-    pub fn extract_cineform() {
-        extract_zip(Path::new("cpp/CineformSDK.zip"), Path::new("cpp/CineformSDK"));
-    }
-
     fn add_files(build: &mut cc::Build, dir: &Path, ext: &str) {
         for entry in fs::read_dir(dir).unwrap() {
             let p = entry.unwrap().path();
@@ -46,63 +40,6 @@ mod build_impl {
                 build.file(&p);
             }
         }
-    }
-
-    fn configure(build: &mut cc::Build) {
-        let sdk = Path::new("cpp/CineformSDK");
-        build
-            .include(sdk.join("Common"))
-            .include(sdk.join("Codec"))
-            .include(sdk.join("ConvertLib"))
-            .include(sdk.join("WarpLib"))
-            .include(sdk.join("EncoderSDK"))
-            .include(sdk.join("DecoderSDK"))
-            .flag("-fPIC")
-            .opt_level(3)
-            .warnings(false)
-            .define("_ALLOCATOR", "1")
-            .define("WARPSTUFF", "1");
-    }
-
-    #[cfg(feature = "cineform")]
-    pub fn compile_cineform() {
-        let sdk = Path::new("cpp/CineformSDK");
-        let codec = sdk.join("Codec");
-        let warp = sdk.join("WarpLib");
-        let encoder = sdk.join("EncoderSDK");
-        let decoder = sdk.join("DecoderSDK");
-        let convert = sdk.join("ConvertLib");
-
-        // ---- C sources ----
-        let mut c_build = cc::Build::new();
-        configure(&mut c_build);
-
-        add_files(&mut c_build, &codec, "c");
-        add_files(&mut c_build, &warp, "c");
-        c_build.compile("cfhd_c");
-
-        // ---- C++ sources ----
-        let mut cpp_build = cc::Build::new();
-        cpp_build.cpp(true);
-        configure(&mut cpp_build);
-
-        for entry in fs::read_dir(&codec).unwrap() {
-            let p = entry.unwrap().path();
-            if p.extension().map_or(false, |e| e == "cpp") {
-                cpp_build.file(&p);
-            }
-        }
-        add_files(&mut cpp_build, &encoder, "cpp");
-        add_files(&mut cpp_build, &decoder, "cpp");
-        add_files(&mut cpp_build, &convert, "cpp");
-        cpp_build.compile("cfhd_cpp");
-
-        println!("cargo:rustc-link-lib=pthread");
-        println!("cargo:rustc-link-lib=dylib=c++");
-        #[cfg(target_os = "linux")]
-        println!("cargo:rustc-link-lib=uuid");
-
-        println!("cargo:rerun-if-changed=build.rs");
     }
 
     #[cfg(feature = "jpeg2000")]
@@ -302,13 +239,9 @@ mod build_impl {
 }
 
 fn main() {
-    #[cfg(feature = "cineform")]
-    build_impl::extract_cineform();
     #[cfg(feature = "jpeg2000")]
     build_impl::extract_openjph();
 
-    #[cfg(feature = "cineform")]
-    build_impl::compile_cineform();
     #[cfg(feature = "jpeg2000")]
     build_impl::build_openjph();
 }

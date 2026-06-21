@@ -188,7 +188,7 @@ pub struct FileDataSource {
 
 #[cfg(feature = "std")]
 impl FileDataSource {
-    fn new(path: impl AsRef<Path>) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(path: impl AsRef<Path>) -> Result<Self, Box<dyn std::error::Error>> {
         //TODO: find chunk files (.M00 .M01 etc)
         let file = File::open(path)?;
         let filesize = file.metadata()?.len();
@@ -233,13 +233,22 @@ pub struct MainReader<DataSource> {
 #[cfg(feature = "std")]
 impl MainReader<FileDataSource>
 {
-    pub fn open_mlv<P: AsRef<Path>>(
+    pub fn open_mlv_from_path<P: AsRef<Path>>(
         path: P,
         max_frames: Option<u32>
     ) -> Option<Self> {
         /* TODO: search for all chunks (and limit to 101) */
-        let mut ds = FileDataSource::new(path).ok()?;
+        let ds = FileDataSource::new(path).ok()?;
+        Self::open_mlv(ds, max_frames)
+    }
+}
 
+impl<DataSrc: DataSource> MainReader<DataSrc>
+{
+    pub fn open_mlv(
+        mut ds: DataSrc,
+        max_frames: Option<u32>
+    ) -> Option<Self> {
         /* Create empty reader/index object */
         let mut core_blocks = CoreBlocks::default();
         let mut all_blocks = vec![];
@@ -310,7 +319,7 @@ impl MainReader<FileDataSource>
                     return true
                 }
             );
-            println!("Result = {:?}", result);
+            // println!("Result = {:?}", result);
         }
 
         /* Sort by timestamp */

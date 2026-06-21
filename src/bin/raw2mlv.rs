@@ -57,9 +57,9 @@ struct Args {
     #[arg(long, num_args = 2, value_names = ["NUM", "DENOM"])]
     frame_rate: Vec<u32>,
 
-    /* /// Centre crop rect, specify resolution in the format of 1920 1080 for example, this area will be cropped out from the center of the image.
+    /// Centre crop rect, specify resolution in the format of 1920 1080 for example, this area will be cropped out from the center of the image.
     #[arg(long, num_args = 2, value_names = ["WIDTH", "HEIGHT"])]
-    centre_crop: Option<Vec<i32>>, */
+    centre_crop: Option<Vec<i32>>,
 
     /// Round resolution to multiple, default 8,2
     #[arg(long, num_args = 2, value_names = ["X", "Y"])]
@@ -183,111 +183,75 @@ fn run_through_cr3(path: &str, mut callback: impl FnMut(&[u16]) -> Result<(),Box
     Ok(())
 }
 
-fn log1(x: f64, stops_range: f64) -> f64 {
-    (x.log2() - 1.0) / (1.0f64.log2() - (2.0f64.powf(-stops_range).log2())) + 1.0
-}
+mod log {
+    fn log1(x: f64, stops_range: f64) -> f64 {
+        (x.log2() - 1.0) / (1.0f64.log2() - (2.0f64.powf(-stops_range).log2())) + 1.0
+    }
 
-fn log1_gradient(x: f64, stops_range: f64) -> f64 {
-    1.0 / (x * stops_range * core::f64::consts::LN_2)
-}
+    fn log1_gradient(x: f64, stops_range: f64) -> f64 {
+        1.0 / (x * stops_range * core::f64::consts::LN_2)
+    }
 
-fn logwithlin(x: f64, thresh: f64, stops_range: f64) -> f64 {
-    if x < thresh {
-        log1_gradient(thresh, stops_range) * (x - thresh) + log1(thresh, stops_range)
-    } else {
-        log1(x, stops_range)
+    fn logwithlin(x: f64, thresh: f64, stops_range: f64) -> f64 {
+        if x < thresh {
+            log1_gradient(thresh, stops_range) * (x - thresh) + log1(thresh, stops_range)
+        } else {
+            log1(x, stops_range)
+        }
+    }
+
+    pub fn logwithlin_inverse(y: f64, thresh: f64, stops_range: f64) -> f64 {
+        let y_thresh = log1(thresh, stops_range);
+        let m = log1_gradient(thresh, stops_range);
+        if m == 0.0 {
+            return thresh;
+        }
+        if y >= y_thresh {
+            2.0_f64.powf((y - 1.0) * stops_range + 1.0)
+        } else {
+            thresh + (y - y_thresh) / m
+        }
+    }
+
+    const LOG_THRESH: f64 = 0.0061;
+    const LOG_STOPS: f64 = 9.72;
+    pub const LOG_MAX_VALUE: u16 = 4095;
+
+    fn log_encode(x: f64) -> f64 {
+        logwithlin(x, LOG_THRESH, LOG_STOPS)
+    }
+
+    pub fn log_encode_int(x: u16, bl: u16, max: u16, max_value: u16) -> u16 {
+        let as_float = ((x.saturating_sub(bl) as f32) / ((max - bl) as f32)).min(1.0);
+        let as_log = log_encode(as_float as f64) * max_value as f64;
+        return ((as_log + 0.5) as u16).min(max_value);
+    }
+
+    pub fn log_decode_int(x: u16, bl: u16, max: u16, max_value: u16) -> u16 {
+        let x = x.min(max_value);
+        let as_float = logwithlin_inverse(x as f64 / max_value as f64, LOG_THRESH, LOG_STOPS);
+        let in_range = as_float * (max - bl) as f64 + bl as f64;
+        return (in_range + 0.5) as u16;
     }
 }
+use log::*;
 
-/// Inverse of `withlin`. Given y = withlin(x, thresh, stops_range), returns x.
-pub fn logwithlin_inverse(y: f64, thresh: f64, stops_range: f64) -> f64 {
-    // Precompute the threshold value in output space and the linear slope
-    let y_thresh = log1(thresh, stops_range);
-    let m = log1_gradient(thresh, stops_range);
+fn log_encode_frame(data: &[u16], bl: u16) -> Vec<u16> {
+    let max: u16 = 16383;
+    data.iter().copied().map(|x| log_encode_int(x.max(bl), bl, max, LOG_MAX_VALUE)).collect()
+}
 
-    // Guard against division by zero (shouldn't occur with valid inputs)
-    if m == 0.0 { return thresh; }
-
-    if y >= y_thresh {
-        // Invert the log branch
-        2.0_f64.powf((y - 1.0) * stops_range + 1.0)
-    } else {
-        // Invert the linear branch
-        thresh + (y - y_thresh) / m
+fn centre_crop_data(data: &[u16], src_width: u32, src_height: u32, crop_width: u32, crop_height: u32) -> Vec<u16> {
+    let x_offset = (src_width - crop_width) / 2;
+    let y_offset = (src_height - crop_height) / 2;
+    let mut result = vec![0u16; (crop_width * crop_height) as usize];
+    for y in 0..crop_height {
+        let src_start = ((y_offset + y) * src_width + x_offset) as usize;
+        let dst_start = (y * crop_width) as usize;
+        result[dst_start..dst_start + crop_width as usize]
+            .copy_from_slice(&data[src_start..src_start + crop_width as usize]);
     }
-}
-
-fn log_encode(x: f64) -> f64 {
-    logwithlin(x, 0.0061, 9.72)
-}
-
-fn log_encode_int(x: u16, bl: u16, max: u16) -> u16 {
-    let as_float = ((x as f32 - bl as f32) as f32) / ((max - bl) as f32);
-    let as_log = log_encode(as_float as f64) * 65535.0;
-    return (as_log + 0.5) as u16;
-}
-
-fn log_decode_int(x: u16, bl: u16, max: u16) -> u16 {
-    let as_float = logwithlin_inverse(x as f64 / 65535.0, 0.0061, 9.72);
-    let in_range = as_float * (max-bl) as f64 + bl as f64;
-    return (in_range + 0.5) as u16;
-}
-
-pub fn encode_log_14_to_12(raw: u16) -> u16 {
-    const BLACK: f32 = 2000.0;
-    const WHITE: f32 = 16383.0;
-
-    const OUT_BLACK: f32 = 32.0;
-    const OUT_WHITE: f32 = 65535.0;
-
-    // Clamp to valid sensor range
-    let x = (raw as f32).clamp(BLACK, WHITE);
-
-    // Normalize to 0..1 after black subtraction
-    let norm = (x - BLACK) / (WHITE - BLACK);
-
-    // Log curve strength
-    // Higher values = more shadow emphasis.
-    const LOG_A: f32 = 500.0;
-
-    let log_norm = (1.0 + LOG_A * norm).ln()
-        / (1.0 + LOG_A).ln();
-
-    let encoded = OUT_BLACK
-        + log_norm * (OUT_WHITE - OUT_BLACK);
-
-    encoded.round() as u16
-}
-
-pub fn decode_log_12_to_14(code: u16) -> u16 {
-    const BLACK: f32 = 2000.0;
-    const WHITE: f32 = 16383.0;
-
-    const OUT_BLACK: f32 = 32.0;
-    // const OUT_WHITE: f32 = 4095.0;
-    const OUT_WHITE: f32 = 65535.0;
-
-    const LOG_A: f32 = 500.0;
-
-    let y = ((code as f32).clamp(OUT_BLACK, OUT_WHITE) - OUT_BLACK)
-        / (OUT_WHITE - OUT_BLACK);
-
-    let norm = ((1.0 + LOG_A).powf(y) - 1.0) / LOG_A;
-
-    let raw = BLACK + norm * (WHITE - BLACK);
-
-    raw.round() as u16
-}
-
-fn redecode(data: &[u16], width: u32, height: u32) -> Vec<u16> {
-    // let (encode, decode) = (encode_log_14_to_12, decode_log_12_to_14);
-    let (encode, decode) = (|x| log_encode_int(x, 1024, 16383), |x| log_decode_int(x, 1024, 16383));
-    let data = data.iter().copied().map(encode).collect::<Vec<_>>();
-    let encoded = codec::cineform::Encoder::new(width as u32, height as u32, codec::cineform_sys::CFHD_ENCODING_QUALITY_FILMSCAN3).unwrap().encode(&data).unwrap();
-    let cratio = (data.len() * 14) as f64 / (encoded.len() * 8) as f64;
-    println!("Compression: {:.2?}", cratio);
-    return codec::cineform::Decoder::new().unwrap().decode(&encoded, width, height).unwrap().0.iter().copied().map(decode).collect::<Vec<_>>();
-    // return data.to_vec()
+    result
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -339,6 +303,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     } else {
         panic!("Couldn't read first file");
     }
+
+    let (orig_width, orig_height) = (width as u32, height as u32);
+    let (width, height) = if let Some(ref crop) = args.centre_crop {
+        (crop[0] as u16, crop[1] as u16)
+    } else {
+        (width, height)
+    };
 
     let out_file_guid = {
         let timestamp_secs =
@@ -403,6 +374,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     writer.write_all(&(1100i32).to_le_bytes())?; //     dynamic_range: i32              // EV x100, from analyzing black level and noise (very close to DxO)
 
+    if args.codec == Codec::Cineform {
+        let bl = black_level.max(0) as u16;
+        let lut_decode: Vec<u16> = (0..=LOG_MAX_VALUE).map(|i| log_decode_int(i, bl, 16383, LOG_MAX_VALUE)).collect();
+        writer.write_all("CURV".as_bytes())?;
+        writer.write_all(&(16u32 + lut_decode.len() as u32 * 2).to_le_bytes())?;
+        writer.write_all(&(1u64).to_le_bytes())?;
+        let linearise_lut_bytes = lut_decode.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<_>>();
+        writer.write_all(&linearise_lut_bytes)?;
+    }
+
     if num_frames_in_file_1 != 1 {
         let mut frame_count = 0u32;
         run_through_cr3(&args.inputs[0], |data: &[u16]| {
@@ -425,6 +406,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             // CINEFORM TEST
             let data = data.to_vec();
+            let data = if let Some(ref crop) = args.centre_crop {
+                centre_crop_data(&data, orig_width, orig_height, crop[0] as u32, crop[1] as u32)
+            } else {
+                data
+            };
 
             if args.codec == Codec::Jp2k {
                 let mut enc = codec::jpeg2000::BayerEncoder::new();
@@ -432,23 +418,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let size = enc.encode_bayer(width as u32, height as u32, 14, &data, &mut jp2k_buf, 0.008);
                 jp2k_buf.truncate(size);
                 buf = jp2k_buf;
-            } else {
+            } else if args.codec == Codec::Cineform {
                 #[cfg(feature = "cineform")]
-                let data = redecode(&data, width as u32, height as u32);
-
-                if args.codec != Codec::Cineform {
-                    buf = vec![0; frame_size_bytes as usize];
-                    mlv::codec::encode_packed14(&data, &mut buf);
-                } else {
-                    #[cfg(feature = "cineform")]
-                    {
-                        if let Ok(e) = codec::cineform::Encoder::new(width as u32, height as u32, quality) {
-                            if let Ok(encoded) = e.encode(&data) {
-                                buf = encoded;
-                            }
+                {
+                    let data = log_encode_frame(&data, black_level.max(0) as u16);
+                    if let Ok(e) = codec::cineform::Encoder::new(width as u32, height as u32, quality) {
+                        if let Ok(encoded) = e.encode(&data) {
+                            buf = encoded;
                         }
                     }
                 }
+            } else {
+                buf = vec![0; frame_size_bytes as usize];
+                mlv::codec::encode_packed14(&data, &mut buf);
             }
 
             writer.write_all(&(32u32 + buf.len() as u32).to_le_bytes())?;
@@ -488,6 +470,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                     // CINEFORM TEST
                     let data = data.to_vec();
+                    let data = if let Some(ref crop) = args.centre_crop {
+                        centre_crop_data(&data, orig_width, orig_height, crop[0] as u32, crop[1] as u32)
+                    } else {
+                        data
+                    };
 
                     if args.codec == Codec::Jp2k {
                         let mut enc = codec::jpeg2000::BayerEncoder::new();
@@ -495,23 +482,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                         let size = enc.encode_bayer(width as u32, height as u32, 14, &data, &mut jp2k_buf, 0.008);
                         jp2k_buf.truncate(size);
                         buf = jp2k_buf;
+                    } else if args.codec == Codec::Cineform {
+                        todo!("Remove no longer needed cineform stubs")
                     } else {
-                        #[cfg(feature = "cineform")]
-                        let data = redecode(&data, width as u32, height as u32);
-
-                        if args.codec != Codec::Cineform {
-                            buf = vec![0; frame_size_bytes as usize];
-                            mlv::codec::encode_packed14(&data, &mut buf);
-                        } else {
-                            #[cfg(feature = "cineform")]
-                            {
-                                if let Ok(e) = codec::cineform::Encoder::new(width as u32, height as u32, quality) {
-                                    if let Ok(encoded) = e.encode(&data) {
-                                        buf = encoded;
-                                    }
-                                }
-                            }
-                        }
+                        buf = vec![0; frame_size_bytes as usize];
+                        mlv::codec::encode_packed14(&data, &mut buf);
                     }
 
                     writer.write_all(&(32u32 + buf.len() as u32).to_le_bytes())?;

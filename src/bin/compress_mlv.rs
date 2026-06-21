@@ -1,15 +1,14 @@
 // example command: cargo run --release --bin compress_mlv --features="compress-mlv" -- --codec jp2k-high --output output.MLV --input /path/to/input.MLV
 use clap::{Parser, ValueEnum};
-use mlv::{BlockHeader, block_reader};
+use mlv::{BlockHeader, FileDataSource, block_reader};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 
 #[derive(Parser, Debug)]
 #[command(about, long_about = None)]
 struct Args {
-    /** Input MLV file */
-    #[arg(long, short)]
-    input: String,
+    /** Input: Either a single MLV file (chunks will be found automatically, or can be specified), a canon CRM file, or multiple still images. */
+    inputs: Vec<String>,
 
     /** Output MLV file */
     #[arg(long, short)]
@@ -26,12 +25,10 @@ struct Args {
 
 #[derive(ValueEnum, Clone, Copy, PartialEq, Eq, Debug)]
 enum CompressionCodec {
-    #[value(name = "cineform")]
-    CineForm,
     #[value(name = "jp2k-low")]
     Jp2kLow,
     #[value(name = "jp2k-medium")]
-    Jp2kBalanced,
+    Jp2kMedium,
     #[value(name = "jp2k-high")]
     Jp2kHigh,
     #[value(name = "jp2k-very-high")]
@@ -43,17 +40,12 @@ enum CompressionCodec {
 impl CompressionCodec {
     fn quant(&self) -> f64 {
         match self {
-            CompressionCodec::CineForm => 0.0,
             CompressionCodec::Jp2kLow => 0.01,                // Visible artifacts
-            CompressionCodec::Jp2kBalanced => 0.0065, // Good for 5K+ resolution if you have no intention of cropping
-            CompressionCodec::Jp2kHigh => 0.0045,     // good for 3k+ only
+            CompressionCodec::Jp2kMedium => 0.0065, // Good for 5K+ resolution if you have no intention of cropping
+            CompressionCodec::Jp2kHigh => 0.0045,   // good for 3k+ only
             CompressionCodec::Jp2kVeryHigh => 0.0032, // good for 1080
             CompressionCodec::Jp2kVisuallyLossless => 0.0015, // (go up one quality level if you're a perfectionist. TODO: decide on rules)
         }
-    }
-
-    fn is_jp2k(&self) -> bool {
-        !matches!(self, CompressionCodec::CineForm)
     }
 }
 
@@ -76,7 +68,7 @@ mod log {
     }
 
     /// Inverse of `withlin`. Given y = withlin(x, thresh, stops_range), returns x.
-    pub fn logwithlin_inverse(y: f64, thresh: f64, stops_range: f64) -> f64 {
+    fn logwithlin_inverse(y: f64, thresh: f64, stops_range: f64) -> f64 {
         // Precompute the threshold value in output space and the linear slope
         let y_thresh = log1(thresh, stops_range);
         let m = log1_gradient(thresh, stops_range);
@@ -97,20 +89,22 @@ mod log {
 
     const LOG_THRESH: f64 = 0.0061;
     const LOG_STOPS: f64 = 9.72;
-    const LOG_MAX_RANGE: f64 = 0.99249;
 
     fn log_encode(x: f64) -> f64 {
         logwithlin(x, LOG_THRESH, LOG_STOPS)
     }
 
-    pub fn log_encode_int(x: u16, bl: u16, max: u16) -> u16 {
-        let as_float = (((x as f32 - bl as f32) as f32) / ((max - bl) as f32)).min(1.0);
-        let as_log = log_encode(as_float as f64) * (65535.0 * LOG_MAX_RANGE);
-        return (as_log + 0.5) as u16;
+    #[inline]
+    pub fn log_encode_int(x: u16, bl: u16, max: u16, max_value: u16) -> u16 {
+        let as_float = ((x.saturating_sub(bl) as f32) / ((max - bl) as f32)).min(1.0);
+        let as_log = log_encode(as_float as f64) * max_value as f64;
+        return ((as_log + 0.5) as u16).min(max_value);
     }
 
-    pub fn log_decode_int(x: u16, bl: u16, max: u16) -> u16 {
-        let as_float = logwithlin_inverse(x as f64 / (65535.0 * LOG_MAX_RANGE), LOG_THRESH, LOG_STOPS);
+    #[inline]
+    pub fn log_decode_int(x: u16, bl: u16, max: u16, max_value: u16) -> u16 {
+        let x = x.min(max_value);
+        let as_float = logwithlin_inverse(x as f64 / max_value as f64, LOG_THRESH, LOG_STOPS);
         let in_range = as_float * (max - bl) as f64 + bl as f64;
         return (in_range + 0.5) as u16;
     }
@@ -213,68 +207,91 @@ fn apply_vertical_stripe_coeffs(data: &mut [u16], width: usize, bl: u16, coeffs:
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    let input_path = &args.input;
+    let input_path = &args.inputs[0];
     let output_path = &args.output;
+
+    // let input_paths = args.inputs.map(|p| PathBuf::from());
 
     let codec = args.codec;
     println!("Codec: {:?} (quant: {})", codec, codec.quant());
 
-    println!("{}", args.input);
+    println!("{:?}", args.inputs);
 
-    let mut reader = mlv::MainReader::open_mlv(input_path, None).expect("Couldn't open MLV");
+    let mut reader = mlv::MainReader::open_mlv_from_path(input_path, None).expect("Couldn't open MLV");
     let bl = reader.black_level().unwrap();
     let wl = reader.white_level().unwrap();
     let mut input_file = BufReader::new(File::open(input_path).expect("Failed to open input file"));
 
+    let mut data_source = FileDataSource::new(&input_path)?;
+
+    // Curve LUT
+    const LOG_MAX_VALUE: u16 = 4095;
+    let lut_encode: Vec<u16> =
+        (0u32..65536).map(|i| log_encode_int(i as u16, bl as u16, 16383, LOG_MAX_VALUE)).collect();
+    let lut_decode: Vec<u16> =
+        (0..=LOG_MAX_VALUE).map(|i| log_decode_int(i, bl as u16, 16383, LOG_MAX_VALUE)).collect();
+    let curv_block = "CURV"
+        .as_bytes()
+        .iter()
+        .copied()
+        .chain((16u32 + lut_decode.len() as u32 * 2).to_le_bytes().into_iter())
+        .chain((1u64).to_le_bytes().into_iter())
+        .chain(lut_decode.into_iter().flat_map(|x| x.to_le_bytes().into_iter()));
+
     // Write output
     let mut output_file = BufWriter::new(File::create(output_path).expect("Failed to create output file"));
 
-    // write first MLVI. TODO: set file count to 1 if input is chunked
-    for block in &reader.all_blocks2 {
-        if block.is_type("MLVI") {
-            input_file.seek(SeekFrom::Start(block.loc.offset())).unwrap();
-            let mut block_buf = vec![0; block.size() as usize];
-            input_file.read_exact(&mut block_buf).unwrap();
-            let video_class: u16 = if codec.is_jp2k() { 0x201 } else { 0x11 };
-            block_buf[32..34].copy_from_slice(&u16::to_le_bytes(video_class));
-            output_file.write_all(&block_buf).unwrap();
-            break;
+    // build a list of blocks to write (in the case of MLV this is simple, pretty much just copy old ones)
+    let mut blocks_to_write: Vec<Vec<u8>> = vec![];
+
+    let is_mlv = true;
+    if is_mlv {
+        // Find first MLVI. TODO: set file count to 1 if input is chunked
+        for block in &reader.all_blocks2 {
+            if block.is_type("MLVI") {
+                input_file.seek(SeekFrom::Start(block.loc.offset())).unwrap();
+                let mut block_buf = vec![0; block.size() as usize];
+                input_file.read_exact(&mut block_buf).unwrap();
+                let video_class: u16 = 0x11; // just raw is 0x01, 0x11 is jp2k
+                block_buf[32..34].copy_from_slice(&u16::to_le_bytes(video_class));
+                blocks_to_write.push(block_buf);
+                break;
+            }
+        }
+
+        // Write all non MLVI blocks. TODO: modify reader to store them in memory instead of having to re-read all of them?
+        for block in &reader.all_blocks2 {
+            if !block.is_type("MLVI") && !block.is_type("VIDF") && !block.is_type("AUDF") {
+                input_file.seek(SeekFrom::Start(block.loc.offset())).unwrap();
+                let mut block_buf = vec![0; block.size() as usize];
+                input_file.read_exact(&mut block_buf).unwrap();
+                blocks_to_write.push(block_buf);
+            }
         }
     }
 
-    // Write all non MLVI blocks. TODO: modify reader to store them in memory instead of having to re-read all of them?
-    for block in &reader.all_blocks2 {
-        if !block.is_type("MLVI") && !block.is_type("VIDF") && !block.is_type("AUDF") {
-            input_file.seek(SeekFrom::Start(block.loc.offset())).unwrap();
-            let mut block_buf = vec![0; block.size() as usize];
-            input_file.read_exact(&mut block_buf).unwrap();
-            output_file.write_all(&block_buf).unwrap();
+    blocks_to_write.push(curv_block.collect());
+
+    if is_mlv {
+        // write all audio AUDF
+        for block in &reader.all_blocks2 {
+            if block.is_type("AUDF") {
+                input_file.seek(SeekFrom::Start(block.loc.offset())).unwrap();
+                let mut block_buf = vec![0; block.size() as usize];
+                input_file.read_exact(&mut block_buf).unwrap();
+                blocks_to_write.push(block_buf);
+            }
         }
     }
 
-    // write CURVE LUT
-    let lut_encode = core::array::from_fn::<_, 65536, _>(|i| log_encode_int(i as u16, bl as u16, 16383));
-    let lut_decode = core::array::from_fn::<_, 65536, _>(|i| log_decode_int(i as u16, bl as u16, 16383));
-
-    output_file.write_all("CURV".as_bytes())?;
-    output_file.write_all(&(16u32 + lut_decode.len() as u32 * 2).to_le_bytes())?;
-    output_file.write_all(&(1u64).to_le_bytes())?;
-    let linearise_lut_bytes = lut_decode.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<_>>();
-    output_file.write_all(&linearise_lut_bytes)?;
-
-    // write all audio AUDF
-    for block in &reader.all_blocks2 {
-        if block.is_type("AUDF") {
-            input_file.seek(SeekFrom::Start(block.loc.offset())).unwrap();
-            let mut block_buf = vec![0; block.size() as usize];
-            input_file.read_exact(&mut block_buf).unwrap();
-            output_file.write_all(&block_buf).unwrap();
-        }
+    // write all blocks in blocks_to_write
+    for block in blocks_to_write {
+        output_file.write_all(&block)?;
     }
 
+    // get vertical stripe coeffs from first frame
     let mut frame_buf = vec![0; (reader.width().unwrap() * reader.height().unwrap()) as usize];
 
-    // get vertical stripe coeffs
     let mut vscoeffs = [1.0; 8];
     if args.fix_vertical_stripes {
         reader.decode_frame(0, &mut frame_buf);
@@ -301,24 +318,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let size = jp2k_encoder.as_mut().unwrap().encode_bayer(
                 reader.width().unwrap() as u32,
                 reader.height().unwrap() as u32,
-                16,
+                12,
                 &logged,
                 &mut jp2k_buf,
                 codec.quant() as f32,
             );
             jp2k_buf.truncate(size);
             buf = jp2k_buf;
-        } else {
-            // cineforms "highest quality" FLIMSCAN3 is too compressed and does a bad job for that compression level, Jp2K is much cleaner
-            if let Ok(e) = mlv::codec::cineform::Encoder::new(
-                reader.width().unwrap() as u32,
-                reader.height().unwrap() as u32,
-                mlv::codec::cineform_sys::CFHD_ENCODING_QUALITY_FILMSCAN3,
-            ) {
-                if let Ok(encoded) = e.encode(&logged) {
-                    buf = encoded;
-                }
-            }
         }
 
         encoded_sizes_sum += buf.len();

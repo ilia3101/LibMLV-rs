@@ -1,7 +1,3 @@
-#[cfg(feature = "cineform")]
-pub mod cineform;
-#[cfg(feature = "cineform")]
-pub mod cineform_sys;
 #[cfg(feature = "jpeg2000")]
 pub mod jpeg2000;
 pub mod lj92;

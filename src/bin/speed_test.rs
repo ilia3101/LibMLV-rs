@@ -16,7 +16,7 @@ fn main()
     });
 
     let (mlv_time,_) = time(Some("libMLV"), || {
-        let mut reader = mlv::MainReader::open_mlv("/Users/ilia/Pictures/America 64GB card Backup/DCIM/100EOS5D/M01-1850.MLV", None).unwrap();
+        let mut reader = mlv::MainReader::open_mlv_from_path("/Users/ilia/Pictures/America 64GB card Backup/DCIM/100EOS5D/M01-1850.MLV", None).unwrap();
         let mut decoded = vec![0u16; (reader.width().unwrap() * reader.height().unwrap()) as usize];
         reader.decode_frame(0, &mut decoded).unwrap();
     });

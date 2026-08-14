@@ -16,7 +16,7 @@ pub fn main()
     println!("{file_name}");
 
     let start = std::time::SystemTime::now();
-    let mut reader = mlv::MainReader::open_mlv(file_name, None).unwrap();
+    let mut reader = mlv::MainReader::open_mlv_from_path(file_name, None).unwrap();
     let end = std::time::SystemTime::now();
 
     println!("reader: {:#?}", reader);

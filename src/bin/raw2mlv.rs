@@ -22,8 +22,6 @@ enum Codec {
     Uncompressed16,
     #[value(name = "lj92")]
     Lj92,
-    #[value(name = "cineform")]
-    Cineform,
     #[value(name = "jp2k")]
     Jp2k,
 }
@@ -268,9 +266,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Args = {:#?}", args);
 
-    #[cfg(feature = "cineform")]
-    let quality = codec::cineform_sys::CFHD_ENCODING_QUALITY_FILMSCAN1;
-
     let mut camera_model_name = "Canon EOS 5D Mark II".to_string();
     let mut camera_model_id = 123u32;
     let mut colour_matrix = [
@@ -329,8 +324,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     writer.write_all(&u16::to_le_bytes(1))?;
     writer.write_all(&u32::to_le_bytes(0))?;
     let videoclass = match args.codec {
-        Codec::Cineform => 0x11,
-        Codec::Jp2k => 0x201,
+        Codec::Jp2k => 0x11,
         Codec::Lj92 => 0x21,
         _ => 0x01,
     };
@@ -374,7 +368,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     writer.write_all(&(1100i32).to_le_bytes())?; //     dynamic_range: i32              // EV x100, from analyzing black level and noise (very close to DxO)
 
-    if args.codec == Codec::Cineform {
+    if args.codec == Codec::Jp2k {
         let bl = black_level.max(0) as u16;
         let lut_decode: Vec<u16> = (0..=LOG_MAX_VALUE).map(|i| log_decode_int(i, bl, 16383, LOG_MAX_VALUE)).collect();
         writer.write_all("CURV".as_bytes())?;
@@ -404,7 +398,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             writer.write_all("VIDF".as_bytes())?;
             let mut buf = Vec::new();
 
-            // CINEFORM TEST
             let data = data.to_vec();
             let data = if let Some(ref crop) = args.centre_crop {
                 centre_crop_data(&data, orig_width, orig_height, crop[0] as u32, crop[1] as u32)
@@ -418,16 +411,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let size = enc.encode_bayer(width as u32, height as u32, 14, &data, &mut jp2k_buf, 0.008);
                 jp2k_buf.truncate(size);
                 buf = jp2k_buf;
-            } else if args.codec == Codec::Cineform {
-                #[cfg(feature = "cineform")]
-                {
-                    let data = log_encode_frame(&data, black_level.max(0) as u16);
-                    if let Ok(e) = codec::cineform::Encoder::new(width as u32, height as u32, quality) {
-                        if let Ok(encoded) = e.encode(&data) {
-                            buf = encoded;
-                        }
-                    }
-                }
             } else {
                 buf = vec![0; frame_size_bytes as usize];
                 mlv::codec::encode_packed14(&data, &mut buf);
@@ -482,8 +465,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                         let size = enc.encode_bayer(width as u32, height as u32, 14, &data, &mut jp2k_buf, 0.008);
                         jp2k_buf.truncate(size);
                         buf = jp2k_buf;
-                    } else if args.codec == Codec::Cineform {
-                        todo!("Remove no longer needed cineform stubs")
                     } else {
                         buf = vec![0; frame_size_bytes as usize];
                         mlv::codec::encode_packed14(&data, &mut buf);

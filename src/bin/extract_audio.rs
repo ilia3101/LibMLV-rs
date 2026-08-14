@@ -9,7 +9,7 @@ pub fn main() {
     let input = &args[1];
     let output = if args.len() > 2 { args[2].as_str() } else { "output.wav" };
 
-    let mut reader = mlv::MainReader::open_mlv(input, None).expect("Failed to open MLV file");
+    let mut reader = mlv::MainReader::open_mlv_from_path(input, None).expect("Failed to open MLV file");
 
     if let Some(sample_rate) = reader.audio_sample_rate()
         && let Some(channels) = reader.audio_channels()

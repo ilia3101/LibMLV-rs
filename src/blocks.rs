@@ -172,6 +172,9 @@ pub fn block_get_size(data: &[u8]) -> Option<u32> {
                                  BLOCK TYPE DEFINITIONS
 *********************************************************************************/
 
+/* Maximum number of u16 entries in a CURV lookup table (covers the full 16-bit range). */
+pub const CURV_MAX_LUT_LEN: usize = 65536;
+
 mlv_all_block_def! {
     MLVI {
         // fileMagic: [u8; 4],         /* Magic Lantern Video file header "MLVI" */
@@ -243,6 +246,14 @@ mlv_all_block_def! {
         bytesPerSecond: u32,    /* audio data rate */
         blockAlign: u16,        /* see RIFF WAV hdr description */
         bitsPerSample: u16      /* audio ADC resolution */
+    }
+
+    CURV {
+        /* blockType: [u8; 4],   // "CURV" - implicit in block header
+           blockSize: u32,       // 16 + lut.len() * 2 - implicit in block header
+           timestamp: u64,       // implicit in block header
+           lut: [u16; ..],       // variable-length LUT, up to CURV_MAX_LUT_LEN entries
+        */
     }
 
     EXPO {

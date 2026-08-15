@@ -47,6 +47,10 @@ impl CompressionCodec {
             CompressionCodec::Jp2kVisuallyLossless => 0.0015, // (go up one quality level if you're a perfectionist. TODO: decide on rules)
         }
     }
+
+    fn is_jp2k(&self) -> bool {
+        return true;
+    }
 }
 
 // Some crap I came up with using desmos - this needs more consideration to improve compression and stop wasting so many code values on dark/noisy images as it currently is
@@ -247,10 +251,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let is_mlv = true;
     if is_mlv {
         // Find first MLVI. TODO: set file count to 1 if input is chunked
-        for block in &reader.all_blocks2 {
-            if block.is_type("MLVI") {
-                input_file.seek(SeekFrom::Start(block.loc.offset())).unwrap();
-                let mut block_buf = vec![0; block.size() as usize];
+        for block in &reader.all_blocks {
+            if block.block.block_type == "MLVI" {
+                input_file.seek(SeekFrom::Start(block.location.offset())).unwrap();
+                let mut block_buf = vec![0; block.block.block_size as usize];
                 input_file.read_exact(&mut block_buf).unwrap();
                 let video_class: u16 = 0x11; // just raw is 0x01, 0x11 is jp2k
                 block_buf[32..34].copy_from_slice(&u16::to_le_bytes(video_class));
@@ -260,10 +264,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Write all non MLVI blocks. TODO: modify reader to store them in memory instead of having to re-read all of them?
-        for block in &reader.all_blocks2 {
-            if !block.is_type("MLVI") && !block.is_type("VIDF") && !block.is_type("AUDF") {
-                input_file.seek(SeekFrom::Start(block.loc.offset())).unwrap();
-                let mut block_buf = vec![0; block.size() as usize];
+        for block in &reader.all_blocks {
+            if block.block.block_type != "MLVI" && block.block.block_type != "VIDF" && block.block.block_type != "AUDF" {
+                input_file.seek(SeekFrom::Start(block.location.offset())).unwrap();
+                let mut block_buf = vec![0; block.block.block_size as usize];
                 input_file.read_exact(&mut block_buf).unwrap();
                 blocks_to_write.push(block_buf);
             }
@@ -274,10 +278,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if is_mlv {
         // write all audio AUDF
-        for block in &reader.all_blocks2 {
-            if block.is_type("AUDF") {
-                input_file.seek(SeekFrom::Start(block.loc.offset())).unwrap();
-                let mut block_buf = vec![0; block.size() as usize];
+        for block in &reader.all_blocks {
+            if block.block.block_type == "AUDF" {
+                input_file.seek(SeekFrom::Start(block.location.offset())).unwrap();
+                let mut block_buf = vec![0; block.block.block_size as usize];
                 input_file.read_exact(&mut block_buf).unwrap();
                 blocks_to_write.push(block_buf);
             }
@@ -351,7 +355,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     // include average block size
     let bidepth = 14;
-    let uncomp_size = reader.all_blocks2.len() as u64 * 32
+    let uncomp_size = reader.all_blocks.len() as u64 * 32
         + (reader.width().unwrap() as u64 * reader.height().unwrap() as u64 * bidepth * reader.num_frames() as u64) / 8;
     println!(
         "Compression ratio compared to uncompressed: {:.1}x ({:.1} MB -> {:.1} MB)",

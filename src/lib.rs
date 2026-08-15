@@ -79,7 +79,7 @@ mod util_types {
         pub wavi: Option<[u8; 32]>,
         pub idnt: Option<[u8; 84]>,
         /* CURV log curve lookup table: (block header bytes, LUT entries). */
-        pub curv: Option<([u8; 16], [u16; blocks::CURV_MAX_LUT_LEN])>,
+        pub curv: Option<[u16; blocks::CURV_MAX_LUT_LEN]>,
         // pub rawc: Option<blocks::Rawc>,
         // pub diso: Option<(u64, DISO)>,
         // pub expo: Option<(u64, EXPO)>,
@@ -230,7 +230,7 @@ impl<DataSrc: DataSource> MainReader<DataSrc> {
         /* TODO: Use rayon par iter maybe?? */
         for chunk_index in 0..ds.num_files() {
             let file_length = ds.file_size(chunk_index);
-            let mut curv_location: Option<FileLocation> = None;
+            let mut curv_location_and_len: Option<(FileLocation, usize)> = None;
             let _result = block_reader::read_blocks::<200, _>(
                 file_length,
                 |pos: u64, out: &mut [u8]| ds.read_exact(chunk_index, pos, out),
@@ -257,11 +257,9 @@ impl<DataSrc: DataSource> MainReader<DataSrc> {
                         } else if block_info.block_type == "IDNT" {
                             try_into(&mut core_blocks.idnt, Some(block_bytes));
                         } else if block_info.block_type == "CURV" {
-                            /* Store the header now; the LUT may exceed the block-read window. */
-                            let mut header = [0u8; 16];
-                            header.copy_from_slice(&block_bytes[0..16]);
-                            core_blocks.curv = Some((header, [0u16; blocks::CURV_MAX_LUT_LEN]));
-                            curv_location = Some(location);
+                            core_blocks.curv = Some([0u16; blocks::CURV_MAX_LUT_LEN]);
+                            let curv_lut_len = (block_info.block_size - 16) / 2;
+                            curv_location_and_len = Some((location, curv_lut_len as usize));
                         } else if block_info.block_type == "VIDF" {
                             let block_size = block_info.block_size;
                             let frame_data_offset = u32::from_le_bytes(*block_bytes[28..].first_chunk().unwrap());
@@ -288,14 +286,12 @@ impl<DataSrc: DataSource> MainReader<DataSrc> {
             // println!("Result = {:?}", result);
 
             /* Read the CURV lookup table if a curv block was found in the file. */
-            if let (Some((header, lut)), Some(location)) = (&mut core_blocks.curv, curv_location) {
-                let block_size = u32::from_le_bytes(*header[4..8].first_chunk().unwrap());
-                let lut_len = ((block_size.saturating_sub(16)) / 2).min(blocks::CURV_MAX_LUT_LEN as u32) as usize;
+            if let (Some(lut), Some((location, lut_len))) = (&mut core_blocks.curv, curv_location_and_len) {
                 if lut_len > 0 {
                     let mut lut_bytes = vec![0u8; lut_len * 2];
                     if ds.read_exact(location.chunk() as u32, location.offset() + 16, &mut lut_bytes).is_ok() {
-                        for (i, chunk) in lut_bytes.chunks_exact(2).enumerate() {
-                            lut[i] = u16::from_le_bytes([chunk[0], chunk[1]]);
+                        for i in 0..lut_len {
+                            lut[i] = u16::from_le_bytes([lut_bytes[i * 2], lut_bytes[i * 2 + 1]]);
                         }
                     }
                 }
@@ -342,12 +338,8 @@ impl<DataSrc> MainReader<DataSrc> {
         blocks::get_i32(&self.core_blocks.rawi?, blocks::RAWI.field_offset("bits_per_pixel")?)
     }
 
-    /** CURV lookup table entries (valid slice length is derived from the block header). */
     pub fn curve_lut(&self) -> Option<&[u16]> {
-        let (header, lut) = self.core_blocks.curv.as_ref()?;
-        let block_size = u32::from_le_bytes(*header[4..8].first_chunk().unwrap());
-        let lut_len = ((block_size.saturating_sub(16)) / 2).min(blocks::CURV_MAX_LUT_LEN as u32) as usize;
-        Some(&lut[..lut_len])
+        self.core_blocks.curv.as_ref().map(|lut| lut.as_slice())
     }
 
     pub fn colour_matrix(&self) -> Option<[[f32; 3]; 3]> {

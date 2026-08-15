@@ -130,46 +130,6 @@ use std::{fmt::Debug, fs::File, io::BufReader, path::Path};
 pub struct BlockEntry {
     pub block: BlockHeader,
     pub location: FileLocation,
-    // pub data: Option<Vec<u8>>,
-}
-
-// TODO: simplify the entry to this maybe...
-pub const BLOCK_MAX_STORE_SIZE: usize = 58; // 64 minus size of FileLocation tag (6)
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[repr(align(64))]
-pub struct BlockEntry2 {
-    pub loc: FileLocation,
-    pub data: [u8; BLOCK_MAX_STORE_SIZE],
-}
-
-impl BlockEntry2 {
-    pub const fn block_type_bytes(&self) -> [u8; 4] {
-        self.data.as_chunks().0[0]
-    }
-
-    pub const fn block_type(&self) -> BlockTag {
-        BlockTag(self.block_type_bytes())
-    }
-
-    pub const fn is_type(&self, blocktype: &str) -> bool {
-        if blocktype.len() == 4 {
-            let (a, b) = (self.data.as_chunks::<4>().0[0], blocktype.as_bytes().as_chunks::<4>().0[0]);
-            u32::from_le_bytes(a) == u32::from_le_bytes(b)
-        } else {
-            false
-        }
-    }
-
-    pub const fn size(&self) -> u32 {
-        u32::from_le_bytes(self.data.as_chunks().0[1])
-    }
-
-    pub const fn timestamp(&self) -> u64 {
-        match self.is_type("MLVI") {
-            true => 0,
-            _ => u64::from_le_bytes(self.data.as_chunks().0[1]),
-        }
-    }
 }
 
 // An MLV file is presented using one of these
@@ -228,7 +188,6 @@ pub struct MainReader<DataSource> {
     pub core_blocks: CoreBlocks,
     pub chunk_files: DataSource, /* TODO: maybe don't keep this inside of this object and have it be external!!! */
     pub all_blocks: Vec<BlockEntry>,
-    pub all_blocks2: Vec<BlockEntry2>,
     /** All AUDF blocks (file location of Block, timestamp, data offset, data length) */
     pub all_audf: Vec<(FileLocation, u64, u64, u32)>,
     /** All VIDF blocks (file location of Block, timestamp, data offset, data length) */
@@ -249,7 +208,6 @@ impl<DataSrc: DataSource> MainReader<DataSrc> {
         /* Create empty reader/index object */
         let mut core_blocks = CoreBlocks::default();
         let mut all_blocks = vec![];
-        let mut all_blocks2 = vec![];
         let mut all_vidf = vec![];
         let mut all_audf = vec![];
 
@@ -267,15 +225,6 @@ impl<DataSrc: DataSource> MainReader<DataSrc> {
                         /* Skip null blocks */
                         let location = FileLocation::new(chunk_index as u8, block_position).unwrap();
                         all_blocks.push(BlockEntry { block: block_info, location });
-                        all_blocks2.push(BlockEntry2 {
-                            loc: location,
-                            data: {
-                                let mut data = [0; _];
-                                let num_bytes = data.len().min(block_bytes.len());
-                                data[0..num_bytes].copy_from_slice(&block_bytes[0..num_bytes]);
-                                data
-                            },
-                        });
                         /* TODO: put this block loading at the end */
                         fn try_into<const N: usize>(out: &mut Option<[u8; N]>, data: Option<&[u8]>) {
                             if let Some(data) = data {
@@ -318,9 +267,12 @@ impl<DataSrc: DataSource> MainReader<DataSrc> {
             // println!("Result = {:?}", result);
         }
 
-        /* Sort by timestamp */
-        all_blocks.sort_unstable_by(|a, b| a.block.time_stamp.cmp(&b.block.time_stamp));
-        all_blocks2.sort_unstable_by(|a, b| a.timestamp().cmp(&b.timestamp()));
+        /* Sort by timestamp (MLVI always first) */
+        all_blocks.sort_unstable_by(|a, b| {
+            let ta = if a.block.block_type == "MLVI" { 0 } else { a.block.time_stamp };
+            let tb = if b.block.block_type == "MLVI" { 0 } else { b.block.time_stamp };
+            ta.cmp(&tb)
+        });
         all_vidf.sort_unstable_by(|a, b| a.1.cmp(&b.1));
         all_audf.sort_unstable_by(|a, b| a.1.cmp(&b.1));
 
@@ -328,7 +280,6 @@ impl<DataSrc: DataSource> MainReader<DataSrc> {
             chunk_files: ds,
             core_blocks,
             all_blocks,
-            all_blocks2,
             all_vidf,
             all_audf,
         })
@@ -405,12 +356,12 @@ impl<DataSrc> MainReader<DataSrc> {
     }
 
     pub fn print_blocks(&self) {
-        for b in self.all_blocks2.iter() {
-            if b.block_type() != "VIDF" && b.block_type() != "AUDF" {
-                println!("{:?} : {} bytes", b.block_type(), b.size());
+        for b in self.all_blocks.iter() {
+            if b.block.block_type != "VIDF" && b.block.block_type != "AUDF" {
+                println!("{:?} : {} bytes", b.block.block_type, b.block.block_size);
             }
         }
-        println!("Total blocks: {}", self.all_blocks2.len());
+        println!("Total blocks: {}", self.all_blocks.len());
     }
 
     pub fn num_frames(&self) -> u32 {

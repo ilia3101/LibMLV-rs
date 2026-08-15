@@ -452,11 +452,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 
                     // CINEFORM TEST
-                    let data = data.to_vec();
-                    let data = if let Some(ref crop) = args.centre_crop {
+                    let data: Vec<u16> = if let Some(ref crop) = args.centre_crop {
                         centre_crop_data(&data, orig_width, orig_height, crop[0] as u32, crop[1] as u32)
                     } else {
-                        data
+                        data.to_vec()
                     };
 
                     if args.codec == Codec::Jp2k {

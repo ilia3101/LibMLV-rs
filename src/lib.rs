@@ -371,11 +371,23 @@ impl<DataSrc> MainReader<DataSrc> {
         ])
     }
 
+    pub const MLV_VIDEO_CLASS_FLAG_LJ92: u16 = 0x20;
+    pub const MLV_VIDEO_CLASS_FLAG_JP2K: u16 = 0x10;
+
+    pub fn videoclass(&self) -> Option<u16> {
+        blocks::get_u16(&self.core_blocks.mlvi?, blocks::MLVI.field_offset("videoClass")?)
+    }
+
+    pub fn is_lj92(&self) -> Option<bool> {
+        Some((self.videoclass()? & Self::MLV_VIDEO_CLASS_FLAG_LJ92) != 0)
+    }
+
+    pub fn is_jp2k(&self) -> Option<bool> {
+        Some((self.videoclass()? & Self::MLV_VIDEO_CLASS_FLAG_JP2K) != 0)
+    }
+
     pub fn is_compressed(&self) -> Option<bool> {
-        const MLV_VIDEO_CLASS_FLAG_LJ92: u16 = 0x20;
-        const MLV_VIDEO_CLASS_FLAG_JP2K: u16 = 0x200;
-        let class = blocks::get_u16(&self.core_blocks.mlvi?, blocks::MLVI.field_offset("videoClass")?);
-        Some(class? & (MLV_VIDEO_CLASS_FLAG_LJ92 | MLV_VIDEO_CLASS_FLAG_JP2K) != 0)
+        Some(self.is_jp2k()? | self.is_lj92()?)
     }
 
     pub fn audio_sample_rate(&self) -> Option<u32> {
@@ -437,12 +449,24 @@ impl<DataSrc> MainReader<DataSrc> {
         self.get_frame_payload(idx, &mut data);
 
         /*************************** Decode the frame ***************************/
-        match (self.bitdepth()?, self.is_compressed()?) {
-            (14, false) => codec::decode_packed14(&data, output),
-            (12, false) => codec::decode_packed12(&data, output),
-            (10, false) => codec::decode_packed10(&data, output),
-            (_, true) => {codec::decode_lj92(&data, output).expect("Lj92 failed");},
-            _ => {}, /* Unsupported format */
+        match (self.bitdepth()?, self.is_lj92()?, self.is_jp2k()?) {
+            (14, false, false) => codec::decode_packed14(&data, output),
+            (12, false, false) => codec::decode_packed12(&data, output),
+            (10, false, false) => codec::decode_packed10(&data, output),
+            (_, true, false) => {codec::decode_lj92(&data, output).expect("Lj92 failed");},
+            (_, false, true) => {
+                #[cfg(feature = "jpeg2000")]
+                {
+                    let decoder = codec::jpeg2000::Decoder::new();
+                    let mut decoded_i32 = Vec::with_capacity(output.len());
+                    unsafe {decoded_i32.set_len(output.len());}
+                    decoder.decode_into(&data, &mut decoded_i32);
+                    for i in 0..output.len() {
+                        output[i] = (decoded_i32[i] & 0xFFFF) as u16;
+                    }
+                }
+            }, /* Unsupported format */
+            _ => {return None;}
         }
 
         return Some(&output[..]);

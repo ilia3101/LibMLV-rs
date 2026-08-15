@@ -37,14 +37,13 @@ zip = "2"
 name = "mlv"
 
 [features]
-default = ["std"] # Use of standard library enabled by default
+default = ["std", "jpeg2000"] # Use of standard library enabled by default
 std = []
 raw2mlv-deps = ["dep:rawler", "dep:clap", "dep:rand", "dep:tqdm"]
 audio-export = ["dep:hound"]
 egui = ["dep:eframe", "dep:rfd"]
-cineform = ["std", "dep:cc"]
 jpeg2000 = ["std", "dep:cc"]
-compress-mlv = ["cineform", "jpeg2000", "dep:clap", "dep:tqdm"]
+compress-mlv = ["jpeg2000", "dep:clap", "dep:tqdm"]
 
 [[bin]]
 name = "raw2mlv"

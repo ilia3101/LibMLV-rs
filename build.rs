@@ -33,15 +33,6 @@ mod build_impl {
         extract_zip(Path::new("cpp/OpenJPH.zip"), Path::new("cpp/OpenJPH"));
     }
 
-    fn add_files(build: &mut cc::Build, dir: &Path, ext: &str) {
-        for entry in fs::read_dir(dir).unwrap() {
-            let p = entry.unwrap().path();
-            if p.extension().map_or(false, |e| e == ext) {
-                build.file(&p);
-            }
-        }
-    }
-
     #[cfg(feature = "jpeg2000")]
     pub fn build_openjph() {
         let core = Path::new("cpp/OpenJPH");

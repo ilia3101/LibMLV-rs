@@ -443,20 +443,12 @@ impl<DataSrc> MainReader<DataSrc> {
             (_, false, true) => {
                 #[cfg(feature = "jpeg2000")]
                 {
-                    let decoder = codec::jpeg2000::Decoder::new();
-                    let mut decoded_i32 = Vec::with_capacity(output.len());
-                    unsafe { decoded_i32.set_len(output.len()) };
-                    decoder.decode_into(&data, &mut decoded_i32);
+                    let mut decoder = codec::jpeg2000::BayerDecoder::new();
+                    decoder.decode_bayer(&data, self.width()? as u32, self.height()? as u32, output);
 
-                    /* JP2K frames written by compress_mlv are log-encoded;
-                     * these MLV files pretty much MUST have a CURV block. TODO: consider handling of this... */
                     if let Some(lut) = self.curve_lut() {
                         for i in 0..output.len() {
-                            output[i] = lut[((decoded_i32[i] & 0xFFFF) as u16) as usize];
-                        }
-                    } else {
-                        for i in 0..output.len() {
-                            output[i] = (decoded_i32[i] & 0xFFFF) as u16;
+                            output[i] = lut[((output[i]) as usize)];
                         }
                     }
                 }
